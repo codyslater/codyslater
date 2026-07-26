@@ -43,7 +43,9 @@ jobs:
         env:
           SEED: ${{ steps.seed.outputs.seed }}
         run: npm run render -- --seed "$SEED" --out banner.gif
-      - run: npm test
+      # Serialized: parallel vitest workers each hold full 288-frame render
+      # buffers, which OOM-kills the suite (exit 143) on hosted runners.
+      - run: npm test -- --maxWorkers=1
       - name: commit if changed
         run: |
           if ! git diff --quiet banner.gif; then
