@@ -1,0 +1,55 @@
+name: regenerate banner
+on:
+  schedule:
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+# A scheduled run and a manual dispatch both push to the same branch, so they
+# queue rather than race. Never cancel in progress: a half-finished run that
+# already pushed is worse than a slightly late one.
+concurrency:
+  group: regenerate-banner
+  cancel-in-progress: false
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm ci
+      # The seed is the date of Cody's last public GitHub activity, so REV shows
+      # when he was last active and the board only evolves on days he was. On a
+      # quiet day the render is byte-identical and the commit step skips.
+      - name: resolve seed from last public activity
+        id: seed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ACTIVITY=$(curl -sf --connect-timeout 5 --max-time 10 \
+            "https://api.github.com/users/codyslater/events/public" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            | jq -r 'if type == "array" then (.[0].created_at // empty) else empty end' \
+            | cut -dT -f1 | tr -d '-' || true)
+          if ! [[ "$ACTIVITY" =~ ^[0-9]{8}$ ]]; then ACTIVITY=$(date +%Y%m%d); fi
+          echo "seed=$ACTIVITY" >> "$GITHUB_OUTPUT"
+      # The render fails closed: main.ts runs §13.5/§13.6's full-loop sweep on
+      # THIS seed's world, between rendering and encoding, and exits non-zero
+      # with the violations rather than writing banner.gif. `npm test` below
+      # gates the suite's pinned configuration; only this step gates $SEED.
+      - name: render
+        env:
+          SEED: ${{ steps.seed.outputs.seed }}
+        run: npm run render -- --seed "$SEED" --out banner.gif
+      - run: npm test
+      - name: commit if changed
+        run: |
+          if ! git diff --quiet banner.gif; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add banner.gif
+            git commit -m "chore: banner @ $(date +%Y-%m-%d)"
+            git push
+          fi
