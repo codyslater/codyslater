@@ -2,6 +2,6 @@
 
 scientist · engineer · medical student
 
-emergence, engineered — rna, neural systems, synthetic biology, and the boundary where organic meets machine.
+emergence, engineered · rna, neural systems, synthetic biology, and the boundary between organic and machine.
 
 more at [codyslater.github.io](https://codyslater.github.io)
