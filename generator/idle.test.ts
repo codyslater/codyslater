@@ -7,6 +7,9 @@ import {
   type Idle, type IdleCell,
 } from './idle.js';
 import { RECORD_FINGER, DENDRITE_COLOUR } from './tissue.js';
+import { buildLayout, buildGraph, fabricCells } from './layout.js';
+import { buildNets } from './growth.js';
+import { mulberry32 } from './rng.js';
 import { drawStatic, readFrame } from './render.js';
 import { buildWorld } from './timeline.js';
 import type { Rect, World } from './types.js';
@@ -67,7 +70,7 @@ const bareWithClearance = (ink_: Set<string>, x: number, y: number): boolean => 
 /** Pixel-level, independent of any geometry: the static board WITHOUT the idle layer, all 16 pixels of the
  * cell and of its 8 neighbours are plain substrate (#0a0a0a or the grid dot #111111). */
 function pixelBare(w: World, idle: Idle, cells: { x: number; y: number }[]): string[] {
-  const data = readFrame(drawStatic({ ...w, idle: { ...idle, staticCells: [] } }));
+  const data = readFrame(drawStatic({ ...w, idle: { ...idle, staticCells: [], repressilator: [] } }));
   const bad: string[] = [];
   for (const c of cells)
     for (let dy = -1; dy <= 1; dy++)
@@ -264,11 +267,10 @@ describe('sprouts: calm tissue creeping onto the board at the connector', () => 
 });
 
 describe('status LEDs', () => {
-  it('place 6..8, on bare substrate with clearance, beside real components, off the right edge band', () => {
+  it('place exactly 5 (the repressilator took three of the old eight), on bare substrate with clearance, beside real components, off the right edge band', () => {
     for (const seed of SEEDS) {
       const w = worldOf(seed), idle = idleOf(seed), blocked = ink(w);
-      expect(idle.leds.length).toBeGreaterThanOrEqual(6);
-      expect(idle.leds.length).toBeLessThanOrEqual(8);
+      expect(idle.leds.length).toBe(5);
       for (const l of idle.leds) {
         expect(l.x).toBeLessThan(204);
         expect(bareWithClearance(blocked, l.x, l.y)).toBe(true);
@@ -335,26 +337,77 @@ describe('the CPU heartbeat', () => {
   });
 });
 
-describe('memory bus bars', () => {
-  it('sweep a 2-cell bar along each DIMM slot\'s contact column on its own period', () => {
+describe('the memory bus bars are gone (the RNA stream replaced them, owner 2026-11-19)', () => {
+  it('there is no `dimms` list, and no idle cell is ever inside a DIMM slot', () => {
     for (const seed of SEEDS) {
       const w = worldOf(seed), idle = idleOf(seed);
+      expect('dimms' in idle).toBe(false);
       const slots = w.components.filter(c => c.kind === 'dimmSlot');
-      expect(idle.dimms).toHaveLength(slots.length);
       expect(slots.length).toBeGreaterThanOrEqual(3);
-      for (const [i, d] of idle.dimms.entries()) {
-        expect([36, 48, 72, 96]).toContain(d.period);
-        const slot = slots[i];
-        const seenY = new Set<number>();
-        for (let t = 0; t < T; t++) {
-          const bar = idleCellsAt(idle, t, T).filter(c => c.x === slot.body.x + 1 && c.y >= slot.body.y && c.y < slot.body.y + slot.body.h);
-          expect(bar.length).toBeLessThanOrEqual(2);
-          for (const c of bar) seenY.add(c.y);
-        }
-        // the bar travels the length of the slot
-        expect(Math.max(...seenY) - Math.min(...seenY)).toBeGreaterThanOrEqual(slot.body.h - 6);
-      }
-      expect(new Set(idle.dimms.map(d => d.period)).size).toBeGreaterThanOrEqual(2);
+      const inSlot = (c: { x: number; y: number }): boolean =>
+        slots.some(s => c.x >= s.rect.x && c.x < s.rect.x + s.rect.w && c.y >= s.rect.y && c.y < s.rect.y + s.rect.h);
+      expect(idle.staticCells.filter(inSlot)).toEqual([]);
+      for (let t = 0; t < T; t++) expect(idleCellsAt(idle, t, T).filter(inSlot)).toEqual([]);
+    }
+  });
+});
+
+describe('the repressilator lights (three of the old eight LEDs, owner 2026-11-19)', () => {
+  /** a light run is valid under `w`'s ink: every cell clear with its 8 neighbours, and x < 204 */
+  const check = (w: World, idle: Idle): void => {
+    const blocked = ink(w), r = idle.repressilator;
+    expect(r).toHaveLength(3);
+    expect(r[1].y).toBe(r[0].y); expect(r[2].y).toBe(r[0].y);
+    expect(r[1].x - r[0].x).toBe(2); expect(r[2].x - r[1].x).toBe(2);        // single empty cell between them
+    for (const c of r) {
+      expect(c.x).toBeLessThan(204);                                          // never the right edge band
+      expect(bareWithClearance(blocked, c.x, c.y)).toBe(true);                // bare substrate, same rule as the LEDs
+      expect(TEXT_ZONES.some(z => c.x >= z.x && c.x < z.x + z.w && c.y >= z.y && c.y < z.y + z.h)).toBe(false);
+      for (const l of idle.leds) expect(cheb(c, l)).toBeGreaterThanOrEqual(2);  // clear of every LED
+    }
+    expect(blocked.has(key(r[0].x + 1, r[0].y))).toBe(false);                 // the gaps are bare too
+    expect(blocked.has(key(r[1].x + 1, r[1].y))).toBe(false);
+  };
+
+  it('are three cells in a row with single gaps, on bare substrate, off the right edge band, for the corpus seeds', () => {
+    for (const seed of SEEDS) {
+      const w = worldOf(seed), idle = idleOf(seed);
+      check(w, idle);
+      expect(pixelBare(w, idle, idle.repressilator)).toEqual([]);
+      console.log(`seed ${seed}: repressilator at ${idle.repressilator.map(c => `(${c.x},${c.y})`).join(' ')}`);
+    }
+  });
+
+  it('sit near the largest QFP (or the chipset heatsink)', () => {
+    for (const seed of SEEDS) {
+      const w = worldOf(seed), idle = idleOf(seed);
+      const qfps = w.components.filter(c => c.kind === 'qfp').sort((a, b) => b.rect.w * b.rect.h - a.rect.w * a.rect.h);
+      const anchor = (qfps[0] ?? w.components.find(c => c.kind === 'heatsink')!).rect;
+      const mid = idle.repressilator[1];
+      const d = Math.max(anchor.x - mid.x, 0, mid.x - (anchor.x + anchor.w - 1), anchor.y - mid.y, 0, mid.y - (anchor.y + anchor.h - 1));
+      expect(d).toBeLessThanOrEqual(12);
+    }
+  });
+
+  it('are deterministic, and not in the idle cell lists (the renderer paints them from the palette)', () => {
+    for (const seed of SEEDS) {
+      const w = worldOf(seed), idle = idleOf(seed), again = buildIdle(w, w.tissue.recordings);
+      expect(again.repressilator).toEqual(idle.repressilator);
+      const lights = new Set(idle.repressilator.map(c => key(c.x, c.y)));
+      expect(idle.staticCells.some(c => lights.has(key(c.x, c.y)))).toBe(false);
+      for (let t = 0; t < T; t += 7) expect(idleCellsAt(idle, t, T).some(c => lights.has(key(c.x, c.y)))).toBe(false);
+    }
+  });
+
+  it('place validly on 24 other layouts (a lightweight world: layout, copper and fabric only)', () => {
+    for (let seed = 1000; seed < 1024; seed++) {
+      const layout = buildLayout(mulberry32(seed));
+      const nets = buildNets(layout), graph = buildGraph(layout.components, nets);
+      const w = {
+        seed, T, accents: layout.accents, components: layout.components, sections: layout.sections,
+        dressing: layout.dressing, mountHoles: layout.mountHoles, nets, graph, fabric: fabricCells(graph),
+      } as unknown as World;
+      check(w, buildIdle(w, []));
     }
   });
 });
@@ -377,6 +430,10 @@ describe('nothing idle lands where it must not', () => {
         expect(c.x).toBeLessThanOrEqual(BOARD_RIGHT);
         expect(TEXT_ZONES.some(z => c.x >= z.x && c.x < z.x + z.w && c.y >= z.y && c.y < z.y + z.h)).toBe(false);
         expect(FINGERS.some(f => c.x >= f.x && c.x < f.x + FINGER_W && c.y >= f.y && c.y < f.y + f.h)).toBe(false);
+      }
+      for (const c of idle.repressilator) {
+        expect(c.x).toBeLessThan(204);
+        expect(TEXT_ZONES.some(z => c.x >= z.x && c.x < z.x + z.w && c.y >= z.y && c.y < z.y + z.h)).toBe(false);
       }
     }
   });

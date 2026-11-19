@@ -203,7 +203,7 @@ export interface World {
   wake: Wake;
   /** the board's answer to each of the tissue's recordings */
   answers: Answer[];
-  /** the board's idle life: sprouts at the connector, LEDs, the heartbeat, bus bars (built after the tissue) */
+  /** the board's idle life: sprouts at the connector, LEDs, the heartbeat, the repressilator lights' place (built after the tissue) */
   idle: Idle;
   /** the owner's last 14 contribution levels: it sets the tissue's and the heartbeat's pace, nothing else */
   activity: Activity;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  BOARD_RIGHT, CELL, COLORS, FABRIC_COLOR, FINGERS, GOLD, GRID_H, GRID_W, HEIGHT, NAME, NAME_COLOR, NAME_ZONE,
+  ACCENTS, BOARD_RIGHT, CELL, COLORS, FABRIC_COLOR, FINGERS, GOLD, GRID_H, GRID_W, HEIGHT, NAME, NAME_COLOR, NAME_ZONE,
   PLATE, REV_RIGHT_PX, REV_ZONE, THESIS_ZONE, VOID_BG, WIDTH,
 } from './layout.js';
 import {
@@ -11,6 +11,10 @@ import { PLATE_COLOURS, idleCellsAt, plateCellsAt, plateStaticCells } from './id
 import { TISSUE_COLOURS, tissueCellsAt } from './tissue.js';
 import { FINGER_FLASH, TRAIL, flowDrawn } from './signals.js';
 import { visibleAges } from './creatures.js';
+import {
+  INSTRUMENT_COLOURS, RNA_SEQUENCE, SCOPE, SCOPE_COLS, STRIP, STRIP_GREENS, repressilatorLevelsAt, rnaCellsAt,
+  scopeCellsAt, scopeStaticCells, stripCellsAt, stripStaticCells,
+} from './instruments.js';
 import { buildWorld } from './timeline.js';
 import type { World } from './types.js';
 
@@ -83,6 +87,24 @@ const flowCells = (w: World, t: number): Set<string> => {
 const spikeCells = (w: World, t: number): Set<string> =>
   new Set(answerSpikeAt(w.answers, t, T).map(c => `${c.x},${c.y}`));
 const SPREAD = [0, 20, 41, 97, 150, 203, 250, 275];
+const mod = (a: number, n: number): number => ((a % n) + n) % n;
+// The four instruments' inputs, derived HERE from the world, independently of render.ts's own tables.
+const scopeAccents = (w: World): [string, string, string] =>
+  w.tissue.somas.map(s => s.accent) as [string, string, string];
+const firingsOf = (w: World): { soma: number; t: number }[] => w.tissue.firings.map(f => ({ soma: f.soma, t: f.t }));
+/** the DIMM slots' body rects, left to right */
+const dimmSlots = (w: World): { x: number; y: number; w: number; h: number }[] =>
+  w.components.filter(c => c.kind === 'dimmSlot').map(c => c.body).sort((a, b) => a.x - b.x);
+/** the accents that are not neural green (the tissue's and the name's), in the world's order */
+const nonNeural = (w: World): string[] => w.accents.filter(a => a !== ACCENTS.neural);
+const REP_ALPHAS = [0.2, 0.4, 0.6, 0.8, 1.0];
+/** light i (protein A, B, C) at level l: the i-th non-green accent at 20/40/60/80/100 percent on the board */
+const repColour = (w: World, i: number, level: number): string => mixOnBg(nonNeural(w)[i], REP_ALPHAS[level]);
+/** A, U, G, C: the first four accents of the world at 70 percent on the board */
+const RNA_BASES = (w: World): Record<'A' | 'U' | 'G' | 'C', string> => {
+  const [a, u, g, c] = w.accents.map(x => mixOnBg(x, 0.7));
+  return { A: a, U: u, G: g, C: c };
+};
 
 describe('colour helpers', () => {
   it('mixOnBg blends toward the substrate; hot blends toward white', () => {
@@ -196,7 +218,7 @@ describe('the static board', () => {
     expect(hexAt(data, FINGERS[0].x + 1, FINGERS[0].y + 1)).toBe(GOLD);
   });
 
-  it('prints the name on the plate in NAME_ZONE, the REV line in REV_ZONE, and nothing in the retired THESIS_ZONE', () => {
+  it('prints the name on the plate in NAME_ZONE, the REV line in REV_ZONE, and only the scope pins as ink in THESIS_ZONE', () => {
     const data = staticData();
     // The owner asked for the name on a dot-matrix plate on 2026-11-19 ("i liked it on a plate too but
     // not as big as the last one you showed"), so the name is no longer antialiased gray text: its ink
@@ -205,8 +227,13 @@ describe('the static board', () => {
     expect(countPixel(data, NAME_ZONE, NAME_COLOR)).toBeGreaterThan(100 * CELL * CELL);
     // the REV line is untouched: antialiased gray ink, checked as `ink` (see the helper)
     expect(countInk(data, REV_ZONE)).toBeGreaterThan(60);
-    expect(countInk(data, THESIS_ZONE)).toBe(0);
-    expect(countPixel(data, THESIS_ZONE, COLORS.muted)).toBe(0);
+    // 2026-11-19: the owner chose the spike scope for THESIS_ZONE. It is the one thing in the zone, and
+    // its only gray above the ink threshold is its four `#888888` corner pins (one cell each); the
+    // bezel `#2a2a2a`, the `#111111` body, the accent baselines and the ticks are all below it or not gray.
+    expect(countInk(data, THESIS_ZONE)).toBe(4 * CELL * CELL);
+    expect(countPixel(data, THESIS_ZONE, COLORS.muted)).toBe(4 * CELL * CELL);
+    // and there is still no white text in it
+    expect(countPixel(data, THESIS_ZONE, COLORS.white)).toBe(0);
   });
 
   it('§13.5 amended: the REV line is RIGHT-aligned, on the board, ending 2 cells inside the edge', () => {
@@ -326,6 +353,10 @@ describe('the frame', () => {
         for (const p of w.soup.frames[age].parts) cells.push({ x: Math.round(p.x), y: Math.round(p.y) });
       cells.push(...wakeCellsAt(w.wake, t), ...tissueCellsAt(w.tissue, t), ...w.tissue.staticCells);
       cells.push(...w.idle.staticCells, ...idleCellsAt(w.idle, t, T), ...plateStaticCells(), ...plateCellsAt(t, T));
+      // the four instruments (owner, 2026-11-19): scope, repressilator lights, RNA stream, activity strip
+      cells.push(...scopeStaticCells(scopeAccents(w)), ...scopeCellsAt(firingsOf(w), scopeAccents(w), t, T));
+      cells.push(...w.idle.repressilator, ...rnaCellsAt(dimmSlots(w), RNA_BASES(w), t));
+      cells.push(...stripStaticCells(w.activity.levels), ...stripCellsAt(w.activity.levels, t));
       for (const c of cells) {
         if (c.x < 0 || c.x >= GRID_W || c.y < 0 || c.y >= GRID_H) continue;
         const i0 = ((c.y * CELL) * WIDTH + c.x * CELL) * 4;
@@ -557,8 +588,10 @@ describe('the idle layer and the name plate', () => {
         checked++;
       }
     }
-    expect(checked).toBeGreaterThan(300);
-    expect(kinds.size).toBeGreaterThanOrEqual(6);        // heart ramp, bus bar, LEDs and sprouts all exercised
+    // was > 300 with the bus bars (about 2 x 3 cells a frame on each of 4 slots) and 8 LEDs; the bars are gone (the
+    // RNA stream replaced them) and 3 LEDs became repressilator lights, so the sampled overlay is smaller: 193 measured.
+    expect(checked).toBeGreaterThan(150);
+    expect(kinds.size).toBeGreaterThanOrEqual(6);        // heart ramp, LEDs and sprouts all exercised
   });
 
   it('turns the fan: its region differs between frames 0 and 3, and is identical between 0 and 12', () => {
@@ -626,6 +659,245 @@ describe('the idle layer and the name plate', () => {
       }
       expect(countPixel(d, NAME_ZONE, COLORS.white)).toBe(0);
       expect(countPixel(d, NAME_ZONE, COLORS.offwhite)).toBe(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The four instruments (owner, 2026-11-19): a spike scope in THESIS_ZONE, three repressilator lights
+// in place of three status LEDs, an RNA stream down the memory slots in place of the bus bars, and a
+// 14-day activity strip in REV_ZONE.
+// ---------------------------------------------------------------------------
+describe('the four instruments', () => {
+  const covering = (w: World, t: number): Set<string> =>
+    new Set([...flowCells(w, t), ...spikeCells(w, t), ...soupCells(w, t)]);
+  const inRect = (r: { x: number; y: number; w: number; h: number }, x: number, y: number): boolean =>
+    x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+
+  describe('spike scope', () => {
+    it('paints every scopeStaticCells cell in drawStatic', () => {
+      const w = world(), data = staticData();
+      const cells = scopeStaticCells(scopeAccents(w));
+      expect(cells.length).toBe(SCOPE.w * SCOPE.h);
+      for (const c of cells) expect(`${c.x},${c.y} ${hexAt(data, c.x, c.y)}`).toBe(`${c.x},${c.y} ${c.color}`);
+    });
+
+    it('uses the three somas\' own accents, in soma order', () => {
+      const w = world();
+      expect(new Set(scopeAccents(w)).size).toBe(3);
+      for (const a of scopeAccents(w)) expect(w.accents).toContain(a);
+    });
+
+    it('shows a soma\'s tick in its accent three frames after it fires', () => {
+      const w = world(), render = renderer(), acc = scopeAccents(w), DX = SCOPE.x + 2, DY = SCOPE.y + 2;
+      for (let s = 0; s < 3; s++) {
+        const f = w.tissue.firings.find(x => x.soma === s);
+        expect(f, `soma ${s} fires`).toBeDefined();
+        const t = mod(f!.t + 3, T), d = dataOf(render(t));
+        const x = DX + SCOPE_COLS - 1 - 1;                     // age 3 -> one column in from the right edge
+        for (const y of [DY + 2 * s, DY + 2 * s + 1]) expect(`soma ${s} ${x},${y} ${hexAt(d, x, y)}`).toBe(`soma ${s} ${x},${y} ${acc[s]}`);
+      }
+    });
+
+    it('nothing else paints inside the scope: its region is the static module plus the ticks, at every sampled frame', () => {
+      const w = world(), render = renderer(), acc = scopeAccents(w);
+      const want = new Map(scopeStaticCells(acc).map(c => [`${c.x},${c.y}`, c.color]));
+      let ticks = 0;
+      for (const t of [...SPREAD, 2, 61, 120]) {
+        const exp = new Map(want);
+        for (const c of scopeCellsAt(firingsOf(w), acc, t, T)) { exp.set(`${c.x},${c.y}`, c.color); ticks++; }
+        const d = dataOf(render(t));
+        for (const [k, color] of exp) {
+          const [x, y] = k.split(',').map(Number);
+          if (hexAt(d, x, y) !== color) throw new Error(`t${t} ${k} ${hexAt(d, x, y)}, want ${color}`);
+        }
+      }
+      expect(ticks).toBeGreaterThan(0);                        // the ticks were really exercised
+    });
+  });
+
+  describe('repressilator lights', () => {
+    it('three lights in a row with single gaps, paired with three different non-green accents', () => {
+      const w = world(), r = w.idle.repressilator;
+      expect(r).toHaveLength(3);
+      expect(r[1].y).toBe(r[0].y); expect(r[2].y).toBe(r[0].y);
+      expect(r[1].x - r[0].x).toBe(2); expect(r[2].x - r[1].x).toBe(2);
+      expect(new Set(nonNeural(w).slice(0, 3)).size).toBe(3);
+    });
+
+    it('shows the colour of repressilatorLevelsAt(t) at frames 0, 16, ..., 80 (activity does not touch it)', () => {
+      const w = world(), render = renderer(), r = w.idle.repressilator;
+      const levelsSeen = new Set<number>();
+      for (const t of [0, 16, 32, 48, 64, 80]) {
+        const d = dataOf(render(t)), lv = repressilatorLevelsAt(t);
+        r.forEach((c, i) => {
+          expect(`t${t} light ${i} ${hexAt(d, c.x, c.y)}`).toBe(`t${t} light ${i} ${repColour(w, i, lv[i])}`);
+          levelsSeen.add(lv[i]);
+        });
+      }
+      expect(levelsSeen.size).toBeGreaterThanOrEqual(3);       // the walk really moves through the levels
+    });
+
+    it('is periodic in 96: frame t and t + 96 are identical in those cells', () => {
+      const w = world(), render = renderer(), r = w.idle.repressilator;
+      for (const t of [0, 16, 32, 48, 64, 80, 91]) {
+        const a = dataOf(render(t)), b = dataOf(render(t + 96)), c = dataOf(render(t + 192));
+        for (const p of r) {
+          expect(hexAt(b, p.x, p.y)).toBe(hexAt(a, p.x, p.y));
+          expect(hexAt(c, p.x, p.y)).toBe(hexAt(a, p.x, p.y));
+        }
+      }
+    });
+
+    it('rests in the static layer at its frame-0 level', () => {
+      const w = world(), data = staticData(), lv = repressilatorLevelsAt(0);
+      w.idle.repressilator.forEach((c, i) => expect(hexAt(data, c.x, c.y)).toBe(repColour(w, i, lv[i])));
+    });
+  });
+
+  describe('RNA stream', () => {
+    it('lies in the DIMM slots\' centre columns, in the slots\' own rows', () => {
+      const w = world(), slots = dimmSlots(w);
+      expect(slots.length).toBeGreaterThanOrEqual(3);
+      for (const c of rnaCellsAt(slots, RNA_BASES(w), 0))
+        expect(slots.some(s => c.x === s.x + 1 && c.y > s.y && c.y < s.y + s.h - 1)).toBe(true);
+    });
+
+    it('is complete in drawStatic: the stream as it is at frame 0', () => {
+      const w = world(), data = staticData();
+      for (const c of rnaCellsAt(dimmSlots(w), RNA_BASES(w), 0))
+        expect(`${c.x},${c.y} ${hexAt(data, c.x, c.y)}`).toBe(`${c.x},${c.y} ${c.color}`);
+    });
+
+    it('shows every base in its colour at a spread of frames unless a flow, a spike or the soup covers the cell', () => {
+      const w = world(), render = renderer(), slots = dimmSlots(w), base = RNA_BASES(w);
+      let checked = 0;
+      for (const t of [...SPREAD, 4, 37, 100]) {
+        const d = dataOf(render(t)), covered = covering(w, t);
+        for (const c of rnaCellsAt(slots, base, t)) {
+          if (covered.has(`${c.x},${c.y}`)) continue;
+          expect(`t${t} ${c.x},${c.y} ${hexAt(d, c.x, c.y)}`).toBe(`t${t} ${c.x},${c.y} ${c.color}`);
+          checked++;
+        }
+      }
+      expect(checked).toBeGreaterThan(400);
+    });
+
+    it('survives a takeover wash and an answer wash of its DIMM (it is painted after the washes, and static in baseData)', () => {
+      const w = world(), slots = dimmSlots(w), base = RNA_BASES(w);
+      const dimmIdx = w.components.findIndex(c => c.kind === 'dimmSlot');
+      const t = 100;
+      // an accent no board part wears, so the answer's wash cannot coincide with a takeover wash already on the slot
+      const answer = { recording: { frame: 0, finger: 0, accent: '#12ab34' }, path: [], component: dimmIdx, arriveFrame: t - 1 };
+      const d = dataOf(createRenderer({ ...w, answers: [answer] })(t));
+      const slot = w.components[dimmIdx].body, covered = covering({ ...w, answers: [] }, t);
+      let checked = 0, washedCells = 0;
+      for (const c of rnaCellsAt(slots, base, t)) {
+        if (!inRect(slot, c.x, c.y) || covered.has(`${c.x},${c.y}`)) continue;
+        expect(hexAt(d, c.x, c.y)).toBe(c.color);
+        checked++;
+      }
+      // the answer wash really did repaint the rest of that slot (its latches take the accent ramp)
+      const plain = dataOf(createRenderer({ ...w, answers: [] })(t));
+      for (let y = slot.y; y < slot.y + slot.h; y++) for (let x = slot.x; x < slot.x + slot.w; x++)
+        if (hexAt(d, x, y) !== hexAt(plain, x, y)) washedCells++;
+      expect(checked).toBeGreaterThan(10);
+      expect(washedCells).toBeGreaterThan(0);
+    });
+
+    it('moves: the cells differ between frames 0 and 4 and repeat at 144 (the stream period)', () => {
+      const w = world(), render = renderer(), slots = dimmSlots(w), base = RNA_BASES(w);
+      const cells = rnaCellsAt(slots, base, 0);
+      const f0 = dataOf(render(0)), f4 = dataOf(render(4)), f144 = dataOf(render(144));
+      const skip = [...covering(w, 0), ...covering(w, 4), ...covering(w, 144)];
+      const gone = new Set(skip);
+      let differ04 = 0, differ0144 = 0;
+      for (const c of cells) {
+        if (gone.has(`${c.x},${c.y}`)) continue;
+        if (hexAt(f0, c.x, c.y) !== hexAt(f4, c.x, c.y)) differ04++;
+        if (hexAt(f0, c.x, c.y) !== hexAt(f144, c.x, c.y)) differ0144++;
+      }
+      expect(differ04).toBeGreaterThan(20);
+      expect(differ0144).toBe(0);
+      expect(T % (RNA_SEQUENCE.length * 4)).toBe(0);
+    });
+  });
+
+  describe('activity strip', () => {
+    const lightCells = (i: number): { x: number; y: number }[] =>
+      [0, 1].flatMap(dy => [0, 1].map(dx => ({ x: STRIP.x + 3 * i + dx, y: STRIP.y + dy })));
+    let cachedOwner: World | undefined;
+    const OWNER = [0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3];
+    const ownerWorld = (): World => (cachedOwner ??= buildWorld(20260724, T, { levels: OWNER }));
+
+    it('shows the 14 default-activity lights at STRIP_GREENS[level] in drawStatic', () => {
+      const w = world(), data = staticData();
+      expect(w.activity.levels).toHaveLength(14);
+      for (let i = 0; i < 14; i++)
+        for (const c of lightCells(i))
+          expect(`light ${i} ${hexAt(data, c.x, c.y)}`).toBe(`light ${i} ${STRIP_GREENS[w.activity.levels[i]]}`);
+      for (const c of stripStaticCells(w.activity.levels)) expect(hexAt(data, c.x, c.y)).toBe(c.color);
+    });
+
+    it('shows the world\'s own levels when the activity is not the default', () => {
+      const w = ownerWorld(), data = dataOf(drawStatic(w));
+      expect(w.activity.levels).toEqual(OWNER);
+      for (let i = 0; i < 14; i++)
+        for (const c of lightCells(i))
+          expect(`light ${i} ${hexAt(data, c.x, c.y)}`).toBe(`light ${i} ${STRIP_GREENS[OWNER[i]]}`);
+    });
+
+    it('pulses the last light one level up for 6 of every 48 frames, per stripCellsAt, and holds the rest', () => {
+      const w = world(), render = renderer(), levels = w.activity.levels, last = lightCells(13);
+      let pulsed = 0;
+      for (const t of [0, 3, 5, 6, 20, 47, 48, 51, 54, 100, 144, 150, 287]) {
+        const d = dataOf(render(t)), pulse = stripCellsAt(levels, t).length > 0;
+        const want = pulse ? STRIP_GREENS[levels[13] + 1] : STRIP_GREENS[levels[13]];
+        for (const c of last) expect(`t${t} ${hexAt(d, c.x, c.y)}`).toBe(`t${t} ${want}`);
+        for (let i = 0; i < 13; i++) for (const c of lightCells(i)) expect(hexAt(d, c.x, c.y)).toBe(STRIP_GREENS[levels[i]]);
+        if (pulse) pulsed++;
+      }
+      expect(pulsed).toBeGreaterThanOrEqual(4);
+    });
+
+    it('does not touch the REV text: no strip cell is on, or within a cell of, the REV line\'s ink', () => {
+      const data = staticData();
+      const cols: number[] = [], rows: number[] = [];
+      for (let x = REV_ZONE.x; x < REV_ZONE.x + REV_ZONE.w; x++) if (countInk(data, { x, y: REV_ZONE.y, w: 1, h: REV_ZONE.h }) > 0) cols.push(x);
+      for (let y = REV_ZONE.y; y < REV_ZONE.y + REV_ZONE.h; y++) if (countInk(data, { x: REV_ZONE.x, y, w: REV_ZONE.w, h: 1 }) > 0) rows.push(y);
+      const ink = { x0: cols[0], x1: cols[cols.length - 1], y0: rows[0], y1: rows[rows.length - 1] };
+      expect(STRIP.x + STRIP.w).toBeLessThan(ink.x0 - 1);      // the strip ends well left of the first glyph
+      for (const c of stripStaticCells(world().activity.levels)) {
+        const near = c.x >= ink.x0 - 1 && c.x <= ink.x1 + 1 && c.y >= ink.y0 - 1 && c.y <= ink.y1 + 1;
+        expect(near, `strip cell ${c.x},${c.y} vs REV ink ${JSON.stringify(ink)}`).toBe(false);
+      }
+      // REV itself is where it was: right-aligned, on the shared line, ink within the band's own rows
+      expect(ink.x1).toBeLessThanOrEqual(REV_RIGHT_PX / CELL);
+      expect(ink.y0).toBeGreaterThanOrEqual(REV_ZONE.y);
+      expect(ink.y1).toBeLessThan(REV_ZONE.y + REV_ZONE.h);
+    });
+  });
+
+  it('every colour in the instruments\' own cells is one the discipline allows', () => {
+    const w = world(), render = renderer();
+    const acc = scopeAccents(w);
+    const allowed = new Set<string>([
+      ...INSTRUMENT_COLOURS, ...acc, ...acc.map(a => mixOnBg(a, 0.22, '#111111')),
+      ...[0, 1, 2].flatMap(i => [0, 1, 2, 3, 4].map(l => repColour(w, i, l))),
+      ...Object.values(RNA_BASES(w)), ...STRIP_GREENS,
+    ]);
+    expect(allowed.size).toBeLessThanOrEqual(8 + 3 + 3 + 15 + 4 + 5);
+    const regions = [
+      ...scopeStaticCells(acc), ...stripStaticCells(w.activity.levels), ...w.idle.repressilator,
+      ...rnaCellsAt(dimmSlots(w), RNA_BASES(w), 0),
+    ];
+    for (const t of [0, 12, 48, 97, 150, 203]) {
+      const d = dataOf(render(t)), covered = covering(w, t);
+      for (const c of regions) {
+        if (covered.has(`${c.x},${c.y}`)) continue;
+        const hex = hexAt(d, c.x, c.y);
+        if (!allowed.has(hex)) throw new Error(`t${t} ${c.x},${c.y} is ${hex}`);
+      }
     }
   });
 });

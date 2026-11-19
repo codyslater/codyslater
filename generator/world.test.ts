@@ -85,7 +85,7 @@ describe('§5 determinism and the amended CLI', () => {
   // still break byte-identical daily regeneration.
   const SIM_AND_RENDER = [
     'boardlife.ts', 'continuity.ts', 'creatures.ts', 'fonts.ts', 'gif.ts', 'growth.ts', 'idle.ts', 'layout.ts',
-    'render.ts', 'rng.ts', 'signals.ts', 'sprites.ts', 'tissue.ts', 'timeline.ts', 'types.ts', 'activity.ts',
+    'render.ts', 'rng.ts', 'signals.ts', 'sprites.ts', 'tissue.ts', 'timeline.ts', 'types.ts', 'activity.ts', 'instruments.ts',
   ];
 
   /** The scan, factored out so the SCANNER itself can be shown to work. */

@@ -1,7 +1,7 @@
 import { createCanvas, type Canvas, type SKRSContext2D } from '@napi-rs/canvas';
 import { registerFonts } from './fonts.js';
 import {
-  ACCENT_LIST, BOARD, BOARD_EDGE, BOARD_KEEPOUT, BOARD_RIGHT, CELL, COLORS, DRESSING_COLORS, FABRIC_COLOR,
+  ACCENTS, ACCENT_LIST, BOARD, BOARD_EDGE, BOARD_KEEPOUT, BOARD_RIGHT, CELL, COLORS, DRESSING_COLORS, FABRIC_COLOR,
   FINGER_W, FINGERS, GOLD, GRID_H, GRID_W, HEIGHT, REV_BASELINE_PX, REV_FONT_PX, REV_RIGHT_PX, REV_ZONE, VOID_BG, WIDTH, cellRect, revFromSeed,
 } from './layout.js';
 import { drawComponent, LEVEL_LIT } from './sprites.js';
@@ -10,7 +10,10 @@ import { visibleAges } from './creatures.js';
 import { answerSpikeAt, answerWashAt, wakeCellsAt } from './boardlife.js';
 import { fanStepAt, idleCellsAt, plateCellsAt, plateStaticCells } from './idle.js';
 import { tissueCellsAt } from './tissue.js';
-import type { BoardComponent, DressingFeature, SoupState, World } from './types.js';
+import {
+  repressilatorLevelsAt, rnaCellsAt, scopeCellsAt, scopeStaticCells, stripCellsAt, stripStaticCells,
+} from './instruments.js';
+import type { BoardComponent, DressingFeature, Rect, SoupState, World } from './types.js';
 
 // ---------------------------------------------------------------------------
 // render.ts — §13's three additions to the §12 board: the `#444444` fabric layer
@@ -18,10 +21,12 @@ import type { BoardComponent, DressingFeature, SoupState, World } from './types.
 // §13.2, and the whole-component wash (ladder -> accent ramp at the pinned
 // stops). Plus the void: §13.3's soup, drawn at four generation ages at once.
 //
-// The board's idle life (the fan's blades, status LEDs, the CPU heartbeat, bus bars, sprouts at the
+// The board's idle life (the fan's blades, status LEDs, the CPU heartbeat, sprouts at the
 // connector) is built as data in `idle.ts` and painted here: statics in `drawStatic`, the rest per
 // frame over the takeover washes and under the signals. The name is a dot-matrix plate, from the same
-// module. §13.5's measured budgets cover the flows and the void; the idle layer's own budget
+// module. The four instruments the owner chose on 2026-11-19 (spike scope, repressilator lights, RNA
+// stream, activity strip) are data in `instruments.ts` and painted here from `instrumentPalette`.
+// §13.5's measured budgets cover the flows and the void; the idle layer's own budget
 // (at most 90 dynamic cells a frame, fan blades extra) is gated in `idle.test.ts`.
 // ---------------------------------------------------------------------------
 
@@ -92,6 +97,52 @@ const LADDER = [COLORS.bg, COLORS.grid, COLORS.surface, COLORS.edge, COLORS.dim,
 const WASH_STOPS = [0.10, 0.17, 0.27, 0.42, 0.66, 1.0];
 
 const mod = (a: number, n: number): number => ((a % n) + n) % n;
+
+// ---------------------------------------------------------------------------
+// The four instruments (owner, 2026-11-19): data in `instruments.ts`, colours chosen here, once per world.
+// ---------------------------------------------------------------------------
+
+/** the repressilator lights' five levels: 20, 40, 60, 80, 100 percent of the accent, on the board */
+const REPRESSILATOR_ALPHAS: readonly number[] = [0.2, 0.4, 0.6, 0.8, 1.0];
+
+export interface InstrumentPalette {
+  /** the three somas' accents in soma order: the scope's tick colours */
+  scope: [string, string, string];
+  /** lights A, B, C by level 0..4: the three non-green accents, in the world's order, at 20..100 percent */
+  repressilator: string[][];
+  /** the RNA bases: the world's first four accents at 70 percent on the board */
+  rna: Record<'A' | 'U' | 'G' | 'C', string>;
+}
+
+/** Every colour the instruments paint besides `INSTRUMENT_COLOURS` and the scope's dim tints, computed once
+ * (no per-frame blending). Pure in the world. */
+export function instrumentPalette(world: World): InstrumentPalette {
+  const scope = world.tissue.somas.map(s => s.accent) as [string, string, string];
+  const lights = world.accents.filter(a => a !== ACCENTS.neural).slice(0, 3);
+  const repressilator = lights.map(a => REPRESSILATOR_ALPHAS.map(al => mixOnBg(a, al)));
+  const [a, u, g, c] = world.accents.slice(0, 4).map(x => mixOnBg(x, 0.7));
+  return { scope, repressilator, rna: { A: a, U: u, G: g, C: c } };
+}
+
+/** The DIMM slots' body rects, left to right: the RNA stream's channels. */
+const dimmSlotBodies = (world: World): Rect[] =>
+  world.components.filter(c => c.kind === 'dimmSlot').map(c => c.body).sort((p, q) => p.x - q.x);
+
+/** The repressilator lights at rest: each at the level it has at frame 0. */
+function repressilatorStaticCells(world: World, pal: InstrumentPalette): { x: number; y: number; color: string }[] {
+  const lv = repressilatorLevelsAt(0);
+  return world.idle.repressilator.map((c, i) => ({ x: c.x, y: c.y, color: pal.repressilator[i][lv[i]] }));
+}
+
+/** The repressilator lights whose level at `t` differs from their resting (frame 0) level. */
+function repressilatorCellsAt(world: World, pal: InstrumentPalette, t: number): { x: number; y: number; color: string }[] {
+  const rest = repressilatorLevelsAt(0), now = repressilatorLevelsAt(t);
+  const out: { x: number; y: number; color: string }[] = [];
+  world.idle.repressilator.forEach((c, i) => {
+    if (now[i] !== rest[i]) out.push({ x: c.x, y: c.y, color: pal.repressilator[i][now[i]] });
+  });
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // The static board — everything that does not move, drawn once
@@ -178,7 +229,8 @@ function drawTextLayer(ctx: SKRSContext2D, seed: number): void {
  * The base layer. Draw order is load-bearing:
  *
  *   substrate -> mount holes -> dressing -> silkscreen -> TRACES (resting) -> FABRIC ->
- *   hardware -> connector gold -> tissue arbor (void) -> idle statics (sprouts, LEDs) -> name plate -> REV line
+ *   hardware -> connector gold -> tissue arbor (void) -> idle statics (sprouts, LEDs) -> name plate ->
+ *   instruments (scope, repressilator, RNA, strip) -> REV line
  *
  * The fabric goes down after the traces and is skipped wherever a trace already
  * occupies the cell (§13.1: "beneath the hardware and never over a live trace"),
@@ -252,6 +304,15 @@ export function drawStatic(world: World): Canvas {
   // the name plate is a module of its own, steady state: the whole name lit.
   for (const c of world.idle.staticCells) cell(ctx, c.x, c.y, c.color);
   for (const c of plateStaticCells()) cell(ctx, c.x, c.y, c.color);
+
+  // The four instruments at rest (owner, 2026-11-19), so the first frame is complete: the scope module in
+  // THESIS_ZONE, the repressilator lights at their frame-0 levels, the RNA stream as it is at frame 0 (in the
+  // base layer, so a wash of its DIMM leaves it alone: washes remap only the ladder grays), and the strip.
+  const pal = instrumentPalette(world);
+  for (const c of scopeStaticCells(pal.scope)) cell(ctx, c.x, c.y, c.color);
+  for (const c of repressilatorStaticCells(world, pal)) cell(ctx, c.x, c.y, c.color);
+  for (const c of rnaCellsAt(dimmSlotBodies(world), pal.rna, 0)) cell(ctx, c.x, c.y, c.color);
+  for (const c of stripStaticCells(world.activity.levels)) cell(ctx, c.x, c.y, c.color);
 
   drawTextLayer(ctx, world.seed);
   return canvas;
@@ -440,6 +501,9 @@ export function createRenderer(world: World): (t: number) => Canvas {
   const baseData = readFrame(staticLayer);
   const nodes = [...world.takeovers.keys()];
   const fan = world.components.find(c => c.kind === 'fan');
+  const pal = instrumentPalette(world);
+  const slots = dimmSlotBodies(world);
+  const firings = world.tissue.firings.map(f => ({ soma: f.soma, t: f.t }));
   const canvas = createCanvas(WIDTH, HEIGHT);
   const ctx = canvas.getContext('2d');
 
@@ -473,13 +537,20 @@ export function createRenderer(world: World): (t: number) => Canvas {
       box(ctx, f.x, f.y, FINGER_W, f.h, mixOnBg(e.color, Math.max(0.35, 1 - age / FINGER_FLASH)));
     }
 
-    // The board's idle life (sprouts, LEDs, the heartbeat, bus bars, the plate's retyping) goes over the
+    // The board's idle life (sprouts, LEDs, the heartbeat, the plate's retyping) goes over the
     // takeover washes, under the wake and everything after it, so a signal or an answer always wins; the
     // answer's chip wash, painted later, covers the heartbeat on the CPU. The fan comes after the washes
     // so a heatsink wash cannot erase its blades.
     for (const c of idleCellsAt(world.idle, t, world.T)) cell(ctx, c.x, c.y, c.color);
     for (const c of plateCellsAt(t, world.T)) cell(ctx, c.x, c.y, c.color);
     if (fan) drawFan(ctx, fan, fanStepAt(t));
+    // The instruments (owner, 2026-11-19), over the washes and under the wake. Nothing else paints inside the
+    // scope or the strip; the lights sit on bare substrate; the RNA is painted after the washes so a wash of
+    // its DIMM cannot erase it (a flow crossing the slot, drawn later, still can).
+    for (const c of scopeCellsAt(firings, pal.scope, t, world.T)) cell(ctx, c.x, c.y, c.color);
+    for (const c of repressilatorCellsAt(world, pal, t)) cell(ctx, c.x, c.y, c.color);
+    for (const c of rnaCellsAt(slots, pal.rna, t)) cell(ctx, c.x, c.y, c.color);
+    for (const c of stripCellsAt(world.activity.levels, t)) cell(ctx, c.x, c.y, c.color);
 
     // The wake: copper a flow has just left, in that flow's colour, stepping down.
     for (const c of wakeCellsAt(world.wake, t)) cell(ctx, c.x, c.y, mixOnBg(c.color, WAKE_LEVELS[c.step]));

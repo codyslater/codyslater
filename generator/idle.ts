@@ -12,8 +12,10 @@ import { DENDRITE_COLOUR, type Recording } from './tissue.js';
 //            same dendrite colour as the neurons'; three have a tip that breathes, and a recording
 //            lifts the ones near its finger for a moment.
 //   HEART    the CPU's centre block brightens in three steps in a lub-dub double beat.
-//   LEDS     6-8 single cells beside real chips, each blinking on its own period.
-//   BUS      a 2-cell bright bar sweeping each DIMM slot's contact column.
+//   LEDS     5 single cells beside real chips, each blinking on its own period.
+//   REPRESSILATOR  where the three gene-circuit lights sit (positions only; `instruments.ts` has their
+//            levels and `render.ts` their colours). They took three of the old eight LEDs (owner,
+//            2026-11-19). The bus bars that swept the DIMM slots are gone: the RNA stream replaced them.
 //   FAN      only the blade phase (`fanStepAt`); the renderer draws the blades.
 //   PLATE    the name, on a small dot-matrix display module (owner, 2026-11-19).
 //
@@ -32,14 +34,14 @@ export interface IdleSprout {
   phase: number;
 }
 export interface IdleLed { x: number; y: number; color: string; period: number; phase: number }
-/** `x` is the contact column, `y` the first row the bar can reach, `len` how many rows it travels. */
-export interface IdleDimm { x: number; y: number; len: number; period: number; phase: number }
 export interface Idle {
   /** painted into the static board: the sprouts at rest and the LEDs off */
   staticCells: IdleCell[];
   sprouts: IdleSprout[];
   leds: IdleLed[];
-  dimms: IdleDimm[];
+  /** the three repressilator lights, proteins A, B, C in order: one row of single cells with one empty cell
+   * between them, on bare substrate. Positions only: they are painted by the renderer, not by `staticCells`. */
+  repressilator: Cell[];
   /** the CPU's centre block the heartbeat lights */
   heart: Rect;
   recordings: { frame: number; finger: number }[];
@@ -72,9 +74,8 @@ const lift = (hex: string, k: number): string => {
 export const SPROUT_REST = DENDRITE_COLOUR;
 /** one step brighter than a sprout at rest */
 export const SPROUT_LIT = lift(DENDRITE_COLOUR, 0.4);
-/** the heartbeat's fixed three-step gray-white ramp; the bus bar is its top step */
+/** the heartbeat's fixed three-step gray-white ramp */
 export const HEART_RAMP: readonly string[] = ['#5c5c5c', '#a4a4a4', '#f0f0f0'];
-const BUS_BAR = HEART_RAMP[2];
 /** LEDs wear the four accents that are not neural green (green is the tissue's and the name's). */
 const LED_ACCENTS: readonly string[] = Object.values(ACCENTS).filter(a => a !== ACCENTS.neural);
 const LED_DIM = 0.25;
@@ -236,6 +237,8 @@ function buildSprouts(rng: Rng, clear: Uint8Array): IdleSprout[] {
 
 // ---------------------------------------------------------------- LEDs
 const LED_PERIODS = [12, 16, 24, 36, 48, 72, 96, 144];
+/** five status LEDs: the repressilator took three of the old eight (owner, 2026-11-19) */
+const LED_COUNT = 5;
 const LED_NEAR = new Set(['qfp', 'dipIC', 'header', 'pcieSlot', 'coinCell', 'choke', 'cpuSocket', 'heatsink', 'capBig', 'crystal']);
 
 function buildLeds(rng: Rng, world: World, clear: Uint8Array): IdleLed[] {
@@ -249,14 +252,43 @@ function buildLeds(rng: Rng, world: World, clear: Uint8Array): IdleLed[] {
   const leds: IdleLed[] = [];
   for (const sep of [24, 18, 14, 10, 6]) {
     for (const c of cand) {
-      if (leds.length >= 8) break;
+      if (leds.length >= LED_COUNT) break;
       if (leds.some(l => Math.max(Math.abs(l.x - c.x), Math.abs(l.y - c.y)) < sep)) continue;
       const i = leds.length, period = LED_PERIODS[i % LED_PERIODS.length];
       leds.push({ x: c.x, y: c.y, color: accents[i % accents.length], period, phase: randInt(rng, 0, period - 1) });
     }
-    if (leds.length >= 8) break;
+    if (leds.length >= LED_COUNT) break;
   }
   return leds;
+}
+
+// ---------------------------------------------------------------- the repressilator's place
+/** the lights sit at x, x + 2, x + 4: three single cells with one empty cell between them */
+const REP_SPAN = 5;
+
+/**
+ * Three lights in a row on bare substrate, found by the same rule as the LEDs (each cell and its 8 neighbours
+ * free of ink), left of the right edge band, and clear of the LEDs. Deterministic, no rng: of all valid runs
+ * the one nearest the largest QFP (else the chipset heatsink, else any part) wins, ties to the top then the left.
+ * A run too near an LED is allowed only when no run farther away exists.
+ */
+function buildRepressilator(world: World, clear: Uint8Array, leds: readonly IdleLed[]): Cell[] {
+  const qfps = world.components.filter(c => c.kind === 'qfp').sort((a, b) => b.rect.w * b.rect.h - a.rect.w * a.rect.h);
+  const anchor = (qfps[0] ?? world.components.find(c => c.kind === 'heatsink') ?? world.components[0])?.rect;
+  const dist = (x: number, y: number): number => (anchor ? distToRect({ x, y }, anchor) : 0);
+  for (const sep of [4, 2, 0]) {
+    let best: { x: number; y: number; d: number } | null = null;
+    for (let y = 6; y < 66; y++)
+      for (let x = 8; x + REP_SPAN - 1 < SPROUT_X0; x++) {
+        const run = [0, 2, 4].map(k => ({ x: x + k, y }));
+        if (!run.every(c => clear[idx(c.x, c.y)] === 1)) continue;
+        if (leds.some(l => run.some(c => Math.max(Math.abs(l.x - c.x), Math.abs(l.y - c.y)) < sep))) continue;
+        const d = dist(x + 2, y);
+        if (!best || d < best.d) best = { x, y, d };
+      }
+    if (best) return [0, 2, 4].map(k => ({ x: best!.x + k, y: best!.y }));
+  }
+  throw new Error('idle: no bare run of three cells for the repressilator lights');
 }
 
 // ---------------------------------------------------------------- the build
@@ -272,10 +304,9 @@ const BEATS: Record<number, readonly number[]> = {
 };
 const STEADY_BEAT = 24;
 const FAN_PERIOD = 12;
-const DIMM_PERIODS = [36, 48, 72, 96];
 
 /** `beatPeriod` is the CPU heartbeat's period (36 calm, 24 steady, 18 busy); only the heartbeat
- * reads it, so the sprouts, LEDs and bus are the same for every pace. */
+ * reads it, so the sprouts, LEDs and the repressilator's place are the same for every pace. */
 export function buildIdle(world: World, recordings: readonly Recording[], beatPeriod = STEADY_BEAT): Idle {
   if (!BEATS[beatPeriod]) throw new Error(`idle: beat period must be one of ${Object.keys(BEATS).join(', ')}, got ${JSON.stringify(beatPeriod)}`);
   const rng = mulberry32(world.seed ^ 0x1d1e);
@@ -284,10 +315,7 @@ export function buildIdle(world: World, recordings: readonly Recording[], beatPe
   const sprouts = buildSprouts(rng, clear);
   const leds = buildLeds(rng, world, clear);
 
-  const dimms: IdleDimm[] = world.components.filter(c => c.kind === 'dimmSlot').map((c, i) => {
-    const period = DIMM_PERIODS[i % DIMM_PERIODS.length];
-    return { x: c.body.x + 1, y: c.body.y + 2, len: c.body.h - 4, period, phase: randInt(rng, 0, period - 1) };
-  });
+  const repressilator = buildRepressilator(world, clear, leds);
 
   const cpu = world.components.find(c => c.kind === 'cpuSocket');
   const heart: Rect = cpu
@@ -299,9 +327,9 @@ export function buildIdle(world: World, recordings: readonly Recording[], beatPe
   for (const l of leds) staticCells.push({ x: l.x, y: l.y, color: onBg(l.color, LED_DIM) });
 
   const periods = [beatPeriod, FAN_PERIOD, ...sprouts.filter(s => s.period).map(s => s.period),
-    ...dimms.map(d => d.period), ...leds.map(l => l.period)];
+    ...leds.map(l => l.period)];
   return {
-    staticCells, sprouts, leds, dimms, heart,
+    staticCells, sprouts, leds, repressilator, heart,
     recordings: recordings.map(r => ({ frame: r.frame, finger: r.finger })),
     beatPeriod, periods,
   };
@@ -339,15 +367,6 @@ export function idleCellsAt(idle: Idle, t: number, T: number): IdleCell[] {
         const depth = Math.min(i, j, w - 1 - i, h - 1 - j);
         out.push({ x: x + i, y: y + j, color: HEART_RAMP[Math.min(lv, depth + 1) - 1] });
       }
-  }
-
-  // memory bus
-  for (const d of idle.dimms) {
-    const pos = Math.floor((mod(f + d.phase, d.period) / d.period) * (d.len + 2)) - 1;
-    for (let k = 0; k < 2; k++) {
-      const row = pos + k;
-      if (row >= 0 && row < d.len) out.push({ x: d.x, y: d.y + row, color: BUS_BAR });
-    }
   }
 
   // LEDs: on for the first half of their period
