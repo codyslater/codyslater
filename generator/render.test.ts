@@ -844,20 +844,24 @@ describe('the four instruments', () => {
       for (const c of ch) expect(`${c.x},${c.y} ${hexAt(data, c.x, c.y)}`).toBe(`${c.x},${c.y} ${RNA_CHANNEL_DARK}`);
     });
 
-    it('in EVERY frame each channel cell is its base colour (lit) or the dark (gap), unless a flow, the answer spike or the soup covers it', () => {
+    it('in EVERY frame each channel cell is its base colour (lit) or the dark (gap), unless the answer spike, the soup or the tissue paints it: a flow never does', () => {
       const w = world(), render = renderer(), slots = dimmSlots(w), base = RNA_BASES(w), ch = rnaChannelCells(slots);
-      let checked = 0;
+      const tissueAt = (t: number): Set<string> =>
+        new Set([...w.tissue.staticCells, ...tissueCellsAt(w.tissue, t)].map(c => `${c.x},${c.y}`));
+      let checked = 0, underFlow = 0;
       for (let t = 0; t < T; t++) {
-        const d = dataOf(render(t)), covered = covering(w, t);
+        const d = dataOf(render(t)), later = new Set([...spikeCells(w, t), ...soupCells(w, t), ...tissueAt(t)]), flows = flowCells(w, t);
         const lit = new Map(rnaCellsAt(slots, base, t).map(c => [`${c.x},${c.y}`, c.color]));
         for (const c of ch) {
           const k = `${c.x},${c.y}`;
-          if (covered.has(k)) continue;
+          if (later.has(k)) continue;
           expect(`t${t} ${k} ${hexAt(d, c.x, c.y)}`).toBe(`t${t} ${k} ${lit.get(k) ?? RNA_CHANNEL_DARK}`);
           checked++;
+          if (flows.has(k)) underFlow++;
         }
       }
       expect(checked).toBeGreaterThan(40 * T * 0.9);
+      expect(underFlow).toBeGreaterThan(0);          // a flow really does cross the channel, so this is not vacuous
     });
 
     it('a takeover wash never tints the channel: in frames where a DIMM slot is under a takeover wash its gap cells are still dark', () => {

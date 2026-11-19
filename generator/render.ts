@@ -514,7 +514,7 @@ export function createRenderer(world: World): (t: number) => Canvas {
 
   // Per-frame layer order, bottom to top: the static board -> takeover washes and contested rings -> finger
   // flash -> idle life (sprouts, LEDs, heartbeat, plate, fan) -> instruments (scope ticks, repressilator lights,
-  // strip pulse) -> wake -> the answering chip's wash -> RNA bases -> flows -> the SOUP -> the whole TISSUE
+  // strip pulse) -> wake -> the answering chip's wash -> flows -> the RNA channel (dark gaps and lit bases) -> the SOUP -> the whole TISSUE
   // (its resting arbor repainted, then its moving cells) -> the answer's spike. The tissue is above the soup so
   // a void creature never covers a neuron's wiring; the spike is the last thing painted.
   return (tRaw: number): Canvas => {
@@ -569,13 +569,14 @@ export function createRenderer(world: World): (t: number) => Canvas {
     for (const a of answerWashAt(world.answers, t, world.T))
       washComponent(ctx, baseData, world.components[a.component], a.accent, a.k, PALETTE.washCeil);
 
-    // The RNA channel, over every wash of its DIMM (the takeover wash and the answer's), under the flows (a flow
-    // crossing the slot still covers it): the WHOLE channel every frame, gap cells dark and lit cells in their
-    // base colour, so a wash never tints it and no base from another frame can linger in a gap.
+    drawFlows(ctx, world, t);
+
+    // The RNA channel, over the flows (a flow crossing the slot passes BEHIND it, so the stream is never cut)
+    // and over every wash of its DIMM (the takeover wash and the answer's): the WHOLE channel every frame, gap
+    // cells dark and lit cells in their base colour, so a wash never tints it and no base from another frame
+    // can linger in a gap.
     for (const c of channel) cell(ctx, c.x, c.y, RNA_CHANNEL_DARK);
     for (const c of rnaCellsAt(slots, pal.rna, t)) cell(ctx, c.x, c.y, c.color);
-
-    drawFlows(ctx, world, t);
 
     // The wrap: the four generation ages share the void, so the outgoing
     // generation and the incoming one are on screen together.
