@@ -39,8 +39,10 @@ export interface Idle {
   staticCells: IdleCell[];
   sprouts: IdleSprout[];
   leds: IdleLed[];
-  /** the three repressilator lights, proteins A, B, C in order: one row of single cells with one empty cell
-   * between them, on bare substrate. Positions only: they are painted by the renderer, not by `staticCells`. */
+  /** the three repressilator lights' TOP-LEFT cells, proteins A, B, C in order. Each light is 2 x 2 cells; the
+   * run is 8 cells wide and 2 tall with a 1-cell gap between lights, on bare substrate. Left to right the lights
+   * are A, C, B (the order the circuit peaks in), so A sits at x, C at x + 3 and B at x + 6. Positions only:
+   * they are painted by the renderer, not by `staticCells`. */
   repressilator: Cell[];
   /** the CPU's centre block the heartbeat lights */
   heart: Rect;
@@ -263,14 +265,23 @@ function buildLeds(rng: Rng, world: World, clear: Uint8Array): IdleLed[] {
 }
 
 // ---------------------------------------------------------------- the repressilator's place
-/** the lights sit at x, x + 2, x + 4: three single cells with one empty cell between them */
-const REP_SPAN = 5;
+/** each light is 2 x 2 cells; lights are 3 cells apart (a 1-cell gap), so the run is 8 wide */
+export const REPRESSILATOR_LIGHT = 2;
+const REP_PITCH = 3, REP_RUN_W = 8;
+/** x offset of each protein's light (A, B, C) within the run: left to right the lights are A, C, B */
+const REP_OFFSET = [0, 6, 3];
+
+/** The four cells of a light, from its top-left cell. */
+export const repressilatorLightCells = (c: Cell): Cell[] =>
+  Array.from({ length: REPRESSILATOR_LIGHT * REPRESSILATOR_LIGHT }, (_, i) =>
+    ({ x: c.x + (i % REPRESSILATOR_LIGHT), y: c.y + Math.floor(i / REPRESSILATOR_LIGHT) }));
 
 /**
- * Three lights in a row on bare substrate, found by the same rule as the LEDs (each cell and its 8 neighbours
- * free of ink), left of the right edge band, and clear of the LEDs. Deterministic, no rng: of all valid runs
- * the one nearest the largest QFP (else the chipset heatsink, else any part) wins, ties to the top then the left.
- * A run too near an LED is allowed only when no run farther away exists.
+ * Three 2 x 2 lights in a run 8 cells wide and 2 tall on bare substrate, found by the same rule as the LEDs
+ * (every cell of the run, gaps included, and its 8 neighbours free of ink: a 1-cell margin all round), left of
+ * the right edge band, and clear of the LEDs. Deterministic, no rng: of all valid runs the one nearest the
+ * largest QFP (else the chipset heatsink, else any part) wins, ties to the top then the left. A run too near an
+ * LED is allowed only when no run farther away exists. Returns the top-left cells in protein order A, B, C.
  */
 function buildRepressilator(world: World, clear: Uint8Array, leds: readonly IdleLed[]): Cell[] {
   const qfps = world.components.filter(c => c.kind === 'qfp').sort((a, b) => b.rect.w * b.rect.h - a.rect.w * a.rect.h);
@@ -278,17 +289,18 @@ function buildRepressilator(world: World, clear: Uint8Array, leds: readonly Idle
   const dist = (x: number, y: number): number => (anchor ? distToRect({ x, y }, anchor) : 0);
   for (const sep of [4, 2, 0]) {
     let best: { x: number; y: number; d: number } | null = null;
-    for (let y = 6; y < 66; y++)
-      for (let x = 8; x + REP_SPAN - 1 < SPROUT_X0; x++) {
-        const run = [0, 2, 4].map(k => ({ x: x + k, y }));
+    for (let y = 6; y + REPRESSILATOR_LIGHT - 1 < 66; y++)
+      for (let x = 8; x + REP_RUN_W - 1 < SPROUT_X0; x++) {
+        const run: Cell[] = [];
+        for (let dy = 0; dy < REPRESSILATOR_LIGHT; dy++) for (let dx = 0; dx < REP_RUN_W; dx++) run.push({ x: x + dx, y: y + dy });
         if (!run.every(c => clear[idx(c.x, c.y)] === 1)) continue;
         if (leds.some(l => run.some(c => Math.max(Math.abs(l.x - c.x), Math.abs(l.y - c.y)) < sep))) continue;
-        const d = dist(x + 2, y);
+        const d = dist(x + REP_PITCH, y);   // the middle light
         if (!best || d < best.d) best = { x, y, d };
       }
-    if (best) return [0, 2, 4].map(k => ({ x: best!.x + k, y: best!.y }));
+    if (best) return REP_OFFSET.map(o => ({ x: best!.x + o, y: best!.y }));
   }
-  throw new Error('idle: no bare run of three cells for the repressilator lights');
+  throw new Error('idle: no bare 8 x 2 run for the repressilator lights');
 }
 
 // ---------------------------------------------------------------- the build

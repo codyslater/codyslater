@@ -15,29 +15,26 @@ import type { Rect } from './types.js';
 export interface InstrumentCell { x: number; y: number; color: string }
 
 const mod = (a: number, n: number): number => ((a % n) + n) % n;
-const hexOf = (r: number, g: number, b: number): string =>
-  `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, '0')}`;
-const rgb = (hex: string): [number, number, number] => {
-  const n = parseInt(hex.slice(1), 16);
-  return [n >> 16, (n >> 8) & 255, n & 255];
-};
-/** `hex` at alpha `a` over `bg` (the same arithmetic as render.mixOnBg, which this module does not import) */
-function mix(hex: string, a: number, bg: string): string {
-  const [r, g, b] = rgb(hex), [br, bgc, bb] = rgb(bg);
-  const m = (c: number, d: number): number => Math.round(c * a + d * (1 - a));
-  return hexOf(m(r, br), m(g, bgc), m(b, bb));
-}
 
 // ---------------------------------------------------------------- colours
 const BODY = '#111111', BEZEL = '#2a2a2a', PIN = '#888888';
 /** level 0..4: unlit, then four greens rising to the board's neural green. At 4 bits per channel (what the GIF
- * encoder keeps) they read (0,1,0) (1,4,1) (1,8,1) (2,12,1) (3,15,1): distinct, and apart from #0a0a0a (0,0,0)
- * and #111111 (1,1,1). */
+ * encoder keeps) they read (0,1,0) (1,6,1) (2,10,1) (3,13,1) (3,15,1): distinct, each green step at least 2 bins
+ * above the last, and apart from #0a0a0a (0,0,0) and #111111 (1,1,1). */
 export const STRIP_GREENS: readonly [string, string, string, string, string] =
-  ['#0e1a0e', '#164a14', '#1f8a1a', '#2fc417', '#39ff14'];
-/** Every colour this module emits EXCEPT the caller-supplied accents (and the scope's baseline tints of them,
- * and the RNA base colours, which are the caller's). 3 + 5 = 8. */
-export const INSTRUMENT_COLOURS: readonly string[] = [BODY, BEZEL, PIN, ...STRIP_GREENS];
+  ['#0e1a0e', '#1d6a18', '#28a51a', '#31d417', '#39ff14'];
+/** The scope's three baselines: one neutral grey, a clear step above the bezel #2a2a2a. rgb444 (3,3,3), apart
+ * from #111111 (1,1,1), the bezel (2,2,2) and the corner pins #888888 (8,8,8). */
+export const SCOPE_BASELINE = '#3a3a3a';
+/** The RNA bases, the same for every seed, at full value: A neural green, U pink, G amber, C cyan. rgb444
+ * (3,15,1) (15,2,7) (15,13,3) (0,14,15): four bins of their own, apart from the greys and the strip's
+ * greens below level 4 (A IS STRIP_GREENS[4]). */
+export const RNA_BASE_COLOURS: Readonly<Record<'A' | 'U' | 'G' | 'C', string>> =
+  { A: '#39ff14', U: '#ff2d78', G: '#ffd23f', C: '#00e5ff' };
+/** Every colour this module emits EXCEPT the caller-supplied accents (the scope's ticks and the repressilator's
+ * lights are the caller's). 3 + 1 + 5 + 3 = 12 (the RNA's A is the strip's top green). */
+export const INSTRUMENT_COLOURS: readonly string[] =
+  [BODY, BEZEL, PIN, SCOPE_BASELINE, ...STRIP_GREENS, RNA_BASE_COLOURS.U, RNA_BASE_COLOURS.G, RNA_BASE_COLOURS.C];
 
 // ---------------------------------------------------------------- 1. spike scope
 export const SCOPE: Rect = { x: 82, y: 66, w: 50, h: 11 };
@@ -45,13 +42,12 @@ export const SCOPE_COLS = 46;
 export const SCOPE_FRAMES_PER_COL = 2;
 const SCOPE_ROWS = 7;
 const SCOPE_DOT_X = SCOPE.x + 2, SCOPE_DOT_Y = SCOPE.y + 2;
-const BASELINE_ALPHA = 0.22;
 /** neuron s keeps its baseline on dot row 2s + 1; a tick is that cell and the one above it */
 const baselineRow = (s: number): number => 2 * s + 1;
 
-/** The resting display: body, bezel, corner pins, padding, and the three dim baselines. */
-export function scopeStaticCells(accents: readonly [string, string, string]): InstrumentCell[] {
-  const dim = accents.map(a => mix(a, BASELINE_ALPHA, BODY));
+/** The resting display: body, bezel, corner pins, padding, and the three baselines (one neutral grey, so the
+ * accent-coloured ticks are the only colour on the scope). The accents argument is kept for the callers. */
+export function scopeStaticCells(_accents?: readonly [string, string, string]): InstrumentCell[] {
   const out: InstrumentCell[] = [];
   for (let j = 0; j < SCOPE.h; j++)
     for (let i = 0; i < SCOPE.w; i++) {
@@ -61,14 +57,14 @@ export function scopeStaticCells(accents: readonly [string, string, string]): In
       else if (edgeX || edgeY) color = BEZEL;
       else if (i >= 2 && i < 2 + SCOPE_COLS && j >= 2 && j < 2 + SCOPE_ROWS) {
         const row = j - 2;
-        for (let s = 0; s < 3; s++) if (row === baselineRow(s)) color = dim[s];
+        for (let s = 0; s < 3; s++) if (row === baselineRow(s)) color = SCOPE_BASELINE;
       }
       out.push({ x: SCOPE.x + i, y: SCOPE.y + j, color });
     }
   return out;
 }
 
-/** The ticks alone: a firing of neuron s at frame tf sits at column COLS - 1 - floor(age / 2) for ages
+/** The ticks alone, each 2 cells tall in the neuron's full accent: a firing of neuron s at frame tf sits at column COLS - 1 - floor(age / 2) for ages
  * 0 .. COLS * 2 - 1, entering at the right edge on its frame and leaving after 92 frames. */
 export function scopeCellsAt(
   firings: readonly { soma: number; t: number }[], accents: readonly [string, string, string], t: number, T: number,
@@ -167,19 +163,28 @@ export function repressilatorLevelsAt(t: number): [number, number, number] {
 // ---------------------------------------------------------------- 3. RNA stream
 /** AUG UGC UAG GAC UAC UCU CUG GCU ACC GAG CGU UAA: M C O(pyrrolysine, UAG) D Y S L A T E R, stop. */
 export const RNA_SEQUENCE = 'AUGUGCUAGGACUACUCUCUGGCUACCGAGCGUUAA';
-export const RNA_FRAMES_PER_BASE = 4;
+/** a base sits every 2nd cell down the slot: one lit cell, one dark cell */
+export const RNA_PITCH = 2;
+/** the stream scrolls down one cell every 2 frames */
+export const RNA_FRAMES_PER_CELL = 2;
+/** frames for the stream to advance one base (two cells): 4. The pattern repeats after 36 x 4 = 144 frames. */
+export const RNA_FRAMES_PER_BASE = RNA_PITCH * RNA_FRAMES_PER_CELL;
 const RNA_SLOT_OFFSET = 9;
 
-/** Every base cell of every slot: down the centre column, rows y + 1 .. y + h - 2, flowing downward. */
+/** The LIT cells of every slot, down the centre column, rows y + 1 .. y + h - 2, flowing downward. Row r of slot
+ * k holds a base when (r - shift) is even, shift = floor(t / 2); the dark cells in between are not returned (the
+ * renderer paints only what this returns, so the slot body shows through them). */
 export function rnaCellsAt(
   slots: readonly Rect[], baseColours: Readonly<Record<'A' | 'U' | 'G' | 'C', string>>, t: number,
 ): InstrumentCell[] {
-  const n = RNA_SEQUENCE.length, shift = Math.floor(t / RNA_FRAMES_PER_BASE);
+  const n = RNA_SEQUENCE.length, shift = Math.floor(t / RNA_FRAMES_PER_CELL);
   const out: InstrumentCell[] = [];
   slots.forEach((s, k) => {
     const x = s.x + Math.floor(s.w / 2);
     for (let r = 1; r <= s.h - 2; r++) {
-      const base = RNA_SEQUENCE[mod(k * RNA_SLOT_OFFSET + r - shift, n)] as 'A' | 'U' | 'G' | 'C';
+      const u = r - shift;
+      if (mod(u, RNA_PITCH) !== 0) continue;
+      const base = RNA_SEQUENCE[mod(k * RNA_SLOT_OFFSET + u / RNA_PITCH, n)] as 'A' | 'U' | 'G' | 'C';
       out.push({ x, y: s.y + r, color: baseColours[base] });
     }
   });
@@ -187,7 +192,7 @@ export function rnaCellsAt(
 }
 
 // ---------------------------------------------------------------- 4. activity strip
-export const STRIP: Rect = { x: 137, y: 70, w: 41, h: 2 };
+export const STRIP: Rect = { x: 137, y: 69, w: 41, h: 3 };
 const STRIP_LIGHTS = 14, STRIP_PULSE_PERIOD = 48, STRIP_PULSE_FRAMES = 6;
 
 function checkLevels(levels: readonly number[]): void {
@@ -197,10 +202,10 @@ function checkLevels(levels: readonly number[]): void {
 }
 const lightCells = (i: number, color: string): InstrumentCell[] => {
   const x0 = STRIP.x + 3 * i;
-  return [0, 1].flatMap(dy => [0, 1].map(dx => ({ x: x0 + dx, y: STRIP.y + dy, color })));
+  return [0, 1, 2].flatMap(dy => [0, 1].map(dx => ({ x: x0 + dx, y: STRIP.y + dy, color })));
 };
 
-/** The fourteen lights at rest, oldest first (leftmost): each 2 x 2 cells with a 1-cell gap. */
+/** The fourteen lights at rest, oldest first (leftmost): each 2 cells wide and 3 tall with a 1-cell gap. */
 export function stripStaticCells(levels: readonly number[]): InstrumentCell[] {
   checkLevels(levels);
   return levels.flatMap((l, i) => lightCells(i, STRIP_GREENS[l]));

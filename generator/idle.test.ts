@@ -352,29 +352,48 @@ describe('the memory bus bars are gone (the RNA stream replaced them, owner 2026
   });
 });
 
+/** every cell of the whole 8 x 2 run: the three lights and the two gap columns */
+const runOf = (r: { x: number; y: number }[]): { x: number; y: number }[] => {
+  const x0 = Math.min(...r.map(c => c.x));
+  return [0, 1].flatMap(dy => Array.from({ length: 8 }, (_, dx) => ({ x: x0 + dx, y: r[0].y + dy })));
+};
 describe('the repressilator lights (three of the old eight LEDs, owner 2026-11-19)', () => {
-  /** a light run is valid under `w`'s ink: every cell clear with its 8 neighbours, and x < 204 */
+  /** each light is 2 x 2 cells from its top-left cell */
+  const blockOf = (c: { x: number; y: number }): { x: number; y: number }[] =>
+    [0, 1].flatMap(dy => [0, 1].map(dx => ({ x: c.x + dx, y: c.y + dy })));
+  /** a light run is valid under `w`'s ink: every cell of the 8 x 2 run clear with its 8 neighbours, and x < 204 */
   const check = (w: World, idle: Idle): void => {
     const blocked = ink(w), r = idle.repressilator;
     expect(r).toHaveLength(3);
     expect(r[1].y).toBe(r[0].y); expect(r[2].y).toBe(r[0].y);
-    expect(r[1].x - r[0].x).toBe(2); expect(r[2].x - r[1].x).toBe(2);        // single empty cell between them
-    for (const c of r) {
+    // proteins A, B, C are r[0], r[1], r[2]; left to right the lights are A, C, B, one gap cell between lights
+    const x0 = r[0].x;
+    expect(r[2].x).toBe(x0 + 3);
+    expect(r[1].x).toBe(x0 + 6);
+    for (const c of runOf(r)) {
       expect(c.x).toBeLessThan(204);                                          // never the right edge band
-      expect(bareWithClearance(blocked, c.x, c.y)).toBe(true);                // bare substrate, same rule as the LEDs
+      expect(bareWithClearance(blocked, c.x, c.y)).toBe(true);                // bare substrate with a 1-cell margin
       expect(TEXT_ZONES.some(z => c.x >= z.x && c.x < z.x + z.w && c.y >= z.y && c.y < z.y + z.h)).toBe(false);
       for (const l of idle.leds) expect(cheb(c, l)).toBeGreaterThanOrEqual(2);  // clear of every LED
     }
-    expect(blocked.has(key(r[0].x + 1, r[0].y))).toBe(false);                 // the gaps are bare too
-    expect(blocked.has(key(r[1].x + 1, r[1].y))).toBe(false);
   };
 
-  it('are three cells in a row with single gaps, on bare substrate, off the right edge band, for the corpus seeds', () => {
+  it('are three 2 x 2 lights in a run 8 cells wide, on bare substrate with a margin, off the right edge band, for the corpus seeds', () => {
     for (const seed of SEEDS) {
       const w = worldOf(seed), idle = idleOf(seed);
       check(w, idle);
-      expect(pixelBare(w, idle, idle.repressilator)).toEqual([]);
+      expect(pixelBare(w, idle, runOf(idle.repressilator))).toEqual([]);
       console.log(`seed ${seed}: repressilator at ${idle.repressilator.map(c => `(${c.x},${c.y})`).join(' ')}`);
+    }
+  });
+
+  it('march left to right in the order the circuit peaks: A, C, B', () => {
+    for (const seed of SEEDS) {
+      const [a, b, c] = idleOf(seed).repressilator;
+      expect(a.x).toBeLessThan(c.x);
+      expect(c.x).toBeLessThan(b.x);
+      expect([[a, 'A'], [b, 'B'], [c, 'C']].sort((p, q) => (p[0] as { x: number }).x - (q[0] as { x: number }).x).map(p => p[1]).join('')).toBe('ACB');
+      expect(blockOf(a).length).toBe(4);
     }
   });
 
@@ -383,7 +402,7 @@ describe('the repressilator lights (three of the old eight LEDs, owner 2026-11-1
       const w = worldOf(seed), idle = idleOf(seed);
       const qfps = w.components.filter(c => c.kind === 'qfp').sort((a, b) => b.rect.w * b.rect.h - a.rect.w * a.rect.h);
       const anchor = (qfps[0] ?? w.components.find(c => c.kind === 'heatsink')!).rect;
-      const mid = idle.repressilator[1];
+      const mid = idle.repressilator[2];                  // the middle light (C)
       const d = Math.max(anchor.x - mid.x, 0, mid.x - (anchor.x + anchor.w - 1), anchor.y - mid.y, 0, mid.y - (anchor.y + anchor.h - 1));
       expect(d).toBeLessThanOrEqual(12);
     }
@@ -393,7 +412,7 @@ describe('the repressilator lights (three of the old eight LEDs, owner 2026-11-1
     for (const seed of SEEDS) {
       const w = worldOf(seed), idle = idleOf(seed), again = buildIdle(w, w.tissue.recordings);
       expect(again.repressilator).toEqual(idle.repressilator);
-      const lights = new Set(idle.repressilator.map(c => key(c.x, c.y)));
+      const lights = new Set(runOf(idle.repressilator).map(c => key(c.x, c.y)));
       expect(idle.staticCells.some(c => lights.has(key(c.x, c.y)))).toBe(false);
       for (let t = 0; t < T; t += 7) expect(idleCellsAt(idle, t, T).some(c => lights.has(key(c.x, c.y)))).toBe(false);
     }
@@ -431,7 +450,7 @@ describe('nothing idle lands where it must not', () => {
         expect(TEXT_ZONES.some(z => c.x >= z.x && c.x < z.x + z.w && c.y >= z.y && c.y < z.y + z.h)).toBe(false);
         expect(FINGERS.some(f => c.x >= f.x && c.x < f.x + FINGER_W && c.y >= f.y && c.y < f.y + f.h)).toBe(false);
       }
-      for (const c of idle.repressilator) {
+      for (const c of runOf(idle.repressilator)) {
         expect(c.x).toBeLessThan(204);
         expect(TEXT_ZONES.some(z => c.x >= z.x && c.x < z.x + z.w && c.y >= z.y && c.y < z.y + z.h)).toBe(false);
       }

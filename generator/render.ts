@@ -8,10 +8,10 @@ import { drawComponent, LEVEL_LIT } from './sprites.js';
 import { SLOTS_PER_FRAME, FINGER_FLASH, contestedRingColor, washAt } from './signals.js';
 import { visibleAges } from './creatures.js';
 import { answerSpikeAt, answerWashAt, wakeCellsAt } from './boardlife.js';
-import { fanStepAt, idleCellsAt, plateCellsAt, plateStaticCells } from './idle.js';
+import { fanStepAt, idleCellsAt, plateCellsAt, plateStaticCells, repressilatorLightCells } from './idle.js';
 import { tissueCellsAt } from './tissue.js';
 import {
-  repressilatorLevelsAt, rnaCellsAt, scopeCellsAt, scopeStaticCells, stripCellsAt, stripStaticCells,
+  RNA_BASE_COLOURS, repressilatorLevelsAt, rnaCellsAt, scopeCellsAt, scopeStaticCells, stripCellsAt, stripStaticCells,
 } from './instruments.js';
 import type { BoardComponent, DressingFeature, Rect, SoupState, World } from './types.js';
 
@@ -102,15 +102,17 @@ const mod = (a: number, n: number): number => ((a % n) + n) % n;
 // The four instruments (owner, 2026-11-19): data in `instruments.ts`, colours chosen here, once per world.
 // ---------------------------------------------------------------------------
 
-/** the repressilator lights' five levels: 20, 40, 60, 80, 100 percent of the accent, on the board */
-const REPRESSILATOR_ALPHAS: readonly number[] = [0.2, 0.4, 0.6, 0.8, 1.0];
+/** the repressilator lights' five levels: 30, 47.5, 65, 82.5, 100 percent of the accent, on the board. Each
+ * level lands in its own rgb444 bin for every accent (asserted in render.test.ts), and the resting level is
+ * already a clear light. */
+const REPRESSILATOR_ALPHAS: readonly number[] = [0.3, 0.475, 0.65, 0.825, 1.0];
 
 export interface InstrumentPalette {
   /** the three somas' accents in soma order: the scope's tick colours */
   scope: [string, string, string];
-  /** lights A, B, C by level 0..4: the three non-green accents, in the world's order, at 20..100 percent */
+  /** lights A, B, C by level 0..4: the three non-green accents, in the world's order, at 30..100 percent */
   repressilator: string[][];
-  /** the RNA bases: the world's first four accents at 70 percent on the board */
+  /** the RNA bases: fixed colours at full value, the same for every world */
   rna: Record<'A' | 'U' | 'G' | 'C', string>;
 }
 
@@ -120,18 +122,18 @@ export function instrumentPalette(world: World): InstrumentPalette {
   const scope = world.tissue.somas.map(s => s.accent) as [string, string, string];
   const lights = world.accents.filter(a => a !== ACCENTS.neural).slice(0, 3);
   const repressilator = lights.map(a => REPRESSILATOR_ALPHAS.map(al => mixOnBg(a, al)));
-  const [a, u, g, c] = world.accents.slice(0, 4).map(x => mixOnBg(x, 0.7));
-  return { scope, repressilator, rna: { A: a, U: u, G: g, C: c } };
+  return { scope, repressilator, rna: { ...RNA_BASE_COLOURS } };
 }
 
 /** The DIMM slots' body rects, left to right: the RNA stream's channels. */
 const dimmSlotBodies = (world: World): Rect[] =>
   world.components.filter(c => c.kind === 'dimmSlot').map(c => c.body).sort((p, q) => p.x - q.x);
 
-/** The repressilator lights at rest: each at the level it has at frame 0. */
+/** The repressilator lights at rest: each 2 x 2 light at the level it has at frame 0. */
 function repressilatorStaticCells(world: World, pal: InstrumentPalette): { x: number; y: number; color: string }[] {
   const lv = repressilatorLevelsAt(0);
-  return world.idle.repressilator.map((c, i) => ({ x: c.x, y: c.y, color: pal.repressilator[i][lv[i]] }));
+  return world.idle.repressilator.flatMap((c, i) =>
+    repressilatorLightCells(c).map(p => ({ x: p.x, y: p.y, color: pal.repressilator[i][lv[i]] })));
 }
 
 /** The repressilator lights whose level at `t` differs from their resting (frame 0) level. */
@@ -139,7 +141,8 @@ function repressilatorCellsAt(world: World, pal: InstrumentPalette, t: number): 
   const rest = repressilatorLevelsAt(0), now = repressilatorLevelsAt(t);
   const out: { x: number; y: number; color: string }[] = [];
   world.idle.repressilator.forEach((c, i) => {
-    if (now[i] !== rest[i]) out.push({ x: c.x, y: c.y, color: pal.repressilator[i][now[i]] });
+    if (now[i] !== rest[i])
+      for (const p of repressilatorLightCells(c)) out.push({ x: p.x, y: p.y, color: pal.repressilator[i][now[i]] });
   });
   return out;
 }
@@ -230,7 +233,7 @@ function drawTextLayer(ctx: SKRSContext2D, seed: number): void {
  *
  *   substrate -> mount holes -> dressing -> silkscreen -> TRACES (resting) -> FABRIC ->
  *   hardware -> connector gold -> tissue arbor (void) -> idle statics (sprouts, LEDs) -> name plate ->
- *   instruments (scope, repressilator, RNA, strip) -> REV line
+ *   instruments (scope, repressilator, strip; the RNA stream is per frame) -> REV line
  *
  * The fabric goes down after the traces and is skipped wherever a trace already
  * occupies the cell (§13.1: "beneath the hardware and never over a live trace"),
@@ -306,12 +309,12 @@ export function drawStatic(world: World): Canvas {
   for (const c of plateStaticCells()) cell(ctx, c.x, c.y, c.color);
 
   // The four instruments at rest (owner, 2026-11-19), so the first frame is complete: the scope module in
-  // THESIS_ZONE, the repressilator lights at their frame-0 levels, the RNA stream as it is at frame 0 (in the
-  // base layer, so a wash of its DIMM leaves it alone: washes remap only the ladder grays), and the strip.
+  // THESIS_ZONE, the repressilator lights at their frame-0 levels, and the strip. The RNA stream is NOT here: its
+  // bases leave gaps, so a base painted for frame 0 would survive in a cell that is dark at frame t. The frame
+  // layer paints every lit cell and the slot body shows through the rest.
   const pal = instrumentPalette(world);
   for (const c of scopeStaticCells(pal.scope)) cell(ctx, c.x, c.y, c.color);
   for (const c of repressilatorStaticCells(world, pal)) cell(ctx, c.x, c.y, c.color);
-  for (const c of rnaCellsAt(dimmSlotBodies(world), pal.rna, 0)) cell(ctx, c.x, c.y, c.color);
   for (const c of stripStaticCells(world.activity.levels)) cell(ctx, c.x, c.y, c.color);
 
   drawTextLayer(ctx, world.seed);
@@ -507,6 +510,11 @@ export function createRenderer(world: World): (t: number) => Canvas {
   const canvas = createCanvas(WIDTH, HEIGHT);
   const ctx = canvas.getContext('2d');
 
+  // Per-frame layer order, bottom to top: the static board -> takeover washes and contested rings -> finger
+  // flash -> idle life (sprouts, LEDs, heartbeat, plate, fan) -> instruments (scope ticks, repressilator lights,
+  // strip pulse) -> wake -> the answering chip's wash -> RNA bases -> flows -> the SOUP -> the whole TISSUE
+  // (its resting arbor repainted, then its moving cells) -> the answer's spike. The tissue is above the soup so
+  // a void creature never covers a neuron's wiring; the spike is the last thing painted.
   return (tRaw: number): Canvas => {
     const t = mod(tRaw, world.T);
     ctx.drawImage(staticLayer, 0, 0);
@@ -545,26 +553,36 @@ export function createRenderer(world: World): (t: number) => Canvas {
     for (const c of plateCellsAt(t, world.T)) cell(ctx, c.x, c.y, c.color);
     if (fan) drawFan(ctx, fan, fanStepAt(t));
     // The instruments (owner, 2026-11-19), over the washes and under the wake. Nothing else paints inside the
-    // scope or the strip; the lights sit on bare substrate; the RNA is painted after the washes so a wash of
-    // its DIMM cannot erase it (a flow crossing the slot, drawn later, still can).
+    // scope or the strip; the lights sit on bare substrate. The RNA stream is painted later, after the answer's
+    // chip wash (see there).
     for (const c of scopeCellsAt(firings, pal.scope, t, world.T)) cell(ctx, c.x, c.y, c.color);
     for (const c of repressilatorCellsAt(world, pal, t)) cell(ctx, c.x, c.y, c.color);
-    for (const c of rnaCellsAt(slots, pal.rna, t)) cell(ctx, c.x, c.y, c.color);
     for (const c of stripCellsAt(world.activity.levels, t)) cell(ctx, c.x, c.y, c.color);
 
     // The wake: copper a flow has just left, in that flow's colour, stepping down.
     for (const c of wakeCellsAt(world.wake, t)) cell(ctx, c.x, c.y, mixOnBg(c.color, WAKE_LEVELS[c.step]));
-
-    // The tissue's moving cells, over its static arbor, under the flows (an escaping
-    // comet crosses the tissue's finger contacts) and under the soup.
-    for (const c of tissueCellsAt(world.tissue, t)) cell(ctx, c.x, c.y, c.color);
 
     // The board answers a recording: the chip washes in the neuron's accent, over any
     // takeover wash it is wearing (the answer wins that chip).
     for (const a of answerWashAt(world.answers, t, world.T))
       washComponent(ctx, baseData, world.components[a.component], a.accent, a.k, PALETTE.washCeil);
 
+    // The RNA stream's lit cells, over every wash of their DIMM (the takeover wash and the answer's), under the
+    // flows (a flow crossing the slot still covers a base). Its dark cells are not painted at all: they show the
+    // slot body, washed or not, so no base from another frame can linger in a gap.
+    for (const c of rnaCellsAt(slots, pal.rna, t)) cell(ctx, c.x, c.y, c.color);
+
     drawFlows(ctx, world, t);
+
+    // The wrap: the four generation ages share the void, so the outgoing
+    // generation and the incoming one are on screen together.
+    for (const age of visibleAges(t, world.T)) drawSoup(ctx, world.soup.frames[age], ACCENT_LIST);
+
+    // The whole tissue goes over the soup: the resting arbor drawStatic painted (leads, contacts, axons, somas,
+    // dendrites) is repainted, because a creature drifting across it would otherwise hide the wiring, and then
+    // its moving cells over it.
+    for (const c of world.tissue.staticCells) cell(ctx, c.x, c.y, c.color);
+    for (const c of tissueCellsAt(world.tissue, t)) cell(ctx, c.x, c.y, c.color);
 
     // The answer's spike runs over everything on the copper, head last-painted so a
     // path that crosses itself keeps its head on top. Head 4 cells white; behind it the
@@ -577,10 +595,6 @@ export function createRenderer(world: World): (t: number) => Canvas {
       const col = c.d < 4 ? COLORS.white : trailColorAt(c.accent, c.d - 3, 7);
       if (col) cell(ctx, c.x, c.y, col);
     }
-
-    // The wrap: the four generation ages share the void, so the outgoing
-    // generation and the incoming one are on screen together.
-    for (const age of visibleAges(t, world.T)) drawSoup(ctx, world.soup.frames[age], ACCENT_LIST);
     return canvas;
   };
 }

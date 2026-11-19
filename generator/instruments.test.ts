@@ -3,8 +3,8 @@ import { REV_ZONE, THESIS_ZONE } from './layout.js';
 import { mixOnBg } from './render.js';
 import type { Rect } from './types.js';
 import {
-  INSTRUMENT_COLOURS, REPRESSILATOR_LEVELS, REPRESSILATOR_PERIOD, RNA_FRAMES_PER_BASE, RNA_SEQUENCE,
-  SCOPE, SCOPE_COLS, SCOPE_FRAMES_PER_COL, STRIP, STRIP_GREENS,
+  INSTRUMENT_COLOURS, REPRESSILATOR_LEVELS, REPRESSILATOR_PERIOD, RNA_BASE_COLOURS, RNA_FRAMES_PER_BASE, RNA_SEQUENCE,
+  SCOPE, SCOPE_BASELINE, SCOPE_COLS, SCOPE_FRAMES_PER_COL, STRIP, STRIP_GREENS,
   repressilatorLevelsAt, rnaCellsAt, scopeCellsAt, scopeStaticCells, stripCellsAt, stripStaticCells,
   type InstrumentCell,
 } from './instruments.js';
@@ -25,10 +25,17 @@ describe('colours', () => {
   it('is at most 18 entries, mutually distinct at 4 bits per channel, and holds every fixed colour', () => {
     expect(INSTRUMENT_COLOURS.length).toBeLessThanOrEqual(18);
     expect(new Set(INSTRUMENT_COLOURS.map(q4)).size).toBe(INSTRUMENT_COLOURS.length);
-    for (const c of ['#111111', '#2a2a2a', '#888888', ...STRIP_GREENS]) expect(INSTRUMENT_COLOURS).toContain(c);
+    for (const c of ['#111111', '#2a2a2a', '#888888', '#3a3a3a', ...STRIP_GREENS, '#ff2d78', '#ffd23f', '#00e5ff'])
+      expect(INSTRUMENT_COLOURS).toContain(c);
+    expect(INSTRUMENT_COLOURS.length).toBe(12);
+  });
+  it('the grey baseline has an rgb444 bin of its own, apart from the board greys', () => {
+    expect(SCOPE_BASELINE).toBe('#3a3a3a');
+    expect(q4(SCOPE_BASELINE)).toBe('3,3,3');
+    for (const c of ['#0a0a0a', '#111111', '#2a2a2a', '#888888']) expect(q4(c)).not.toBe(q4(SCOPE_BASELINE));
   });
   it('every fixed colour the cells emit is in the list (accent-derived ones aside)', () => {
-    const accentish = new Set<string>([...ACC, ...ACC.map(a => mixOnBg(a, 0.22, '#111111'))]);
+    const accentish = new Set<string>([...ACC]);
     const cells = [
       ...scopeStaticCells(ACC), ...stripStaticCells(Array(14).fill(1)),
       ...stripCellsAt([0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1], 0),
@@ -55,7 +62,7 @@ describe('spike scope', () => {
       expect(c.y).toBeGreaterThanOrEqual(SCOPE.y); expect(c.y).toBeLessThan(SCOPE.y + SCOPE.h);
     }
   });
-  it('has bezel, corner pins, body padding, and tinted baselines', () => {
+  it('has bezel, corner pins, body padding, and three neutral grey baselines (#3a3a3a)', () => {
     const at = (x: number, y: number): string => statics.find(c => c.x === x && c.y === y)!.color;
     const x1 = SCOPE.x + SCOPE.w - 1, y1 = SCOPE.y + SCOPE.h - 1;
     for (const [x, y] of [[SCOPE.x, SCOPE.y], [x1, SCOPE.y], [SCOPE.x, y1], [x1, y1]]) expect(at(x, y)).toBe('#888888');
@@ -64,8 +71,7 @@ describe('spike scope', () => {
     expect(at(SCOPE.x + 1, SCOPE.y + 5)).toBe('#111111');           // padding
     expect(at(SCOPE.x + 10, SCOPE.y + 1)).toBe('#111111');
     for (let s = 0; s < 3; s++) {
-      const dim = mixOnBg(ACC[s], 0.22, '#111111');
-      for (let c = 0; c < SCOPE_COLS; c++) expect(at(DX + c, DY + 2 * s + 1)).toBe(dim);
+      for (let c = 0; c < SCOPE_COLS; c++) expect(at(DX + c, DY + 2 * s + 1)).toBe('#3a3a3a');
       expect(at(DX + 7, DY + 2 * s)).toBe('#111111');               // the space above a baseline
     }
     for (let c = 0; c < SCOPE_COLS; c++) expect(at(DX + c, DY + 6)).toBe('#111111'); // row 6 empty
@@ -79,6 +85,15 @@ describe('spike scope', () => {
       { x: DX + col, y: DY + 3, color: ACC[1] },
     ]));
   };
+  it('a tick is 2 cells tall, in the neuron\'s full accent, and brighter than its baseline', () => {
+    for (const soma of [0, 1, 2]) {
+      const cs = scopeCellsAt([{ soma, t: 4 }], ACC, 4, T);
+      expect(cs.length).toBe(2);
+      for (const c of cs) expect(c.color).toBe(ACC[soma]);
+      expect(new Set(cs.map(c => c.x)).size).toBe(1);
+      expect(Math.abs(cs[0].y - cs[1].y)).toBe(1);
+    }
+  });
   it('a tick enters at the right edge on its frame and crawls left one column per 2 frames', () => {
     expectTick(10, SCOPE_COLS - 1);
     expectTick(11, SCOPE_COLS - 1);
@@ -189,37 +204,64 @@ describe('RNA stream', () => {
     expect(RNA_FRAMES_PER_BASE).toBe(4);
     expect(T % (RNA_SEQUENCE.length * RNA_FRAMES_PER_BASE)).toBe(0);
   });
-  it('draws h-2 cells per slot in the centre column', () => {
-    const cs = rnaCellsAt(slots, colours, 0);
-    expect(cs.length).toBe(slots.reduce((n, s) => n + s.h - 2, 0));
-    expect(new Set(cs.map(key)).size).toBe(cs.length);
-    slots.forEach(s => {
-      const mine = cs.filter(c => c.x === s.x + 1 && c.y >= s.y && c.y < s.y + s.h);
-      expect(mine.length).toBe(s.h - 2);
-      expect(Math.min(...mine.map(c => c.y))).toBe(s.y + 1);
-      expect(Math.max(...mine.map(c => c.y))).toBe(s.y + s.h - 2);
-    });
+  it('has fixed base colours, the same for every seed, each in an rgb444 bin of its own', () => {
+    expect(RNA_BASE_COLOURS).toEqual({ A: '#39ff14', U: '#ff2d78', G: '#ffd23f', C: '#00e5ff' });
+    const qs = [...Object.values(RNA_BASE_COLOURS), '#0a0a0a', '#111111', '#2a2a2a', '#3a3a3a', '#888888'].map(q4);
+    expect(new Set(qs).size).toBe(9);
   });
-  it('row r of slot k shows the stated base, and the pattern moves down one row per 4 frames', () => {
-    const mod = (a: number, n: number): number => ((a % n) + n) % n;
-    for (const t of [0, 1, 3, 4, 17, 100, 143, 200, 287]) {
+  const mod = (a: number, n: number): number => ((a % n) + n) % n;
+  const colAt = (s: Rect, cs: InstrumentCell[]): Map<number, string> =>
+    new Map(cs.filter(c => c.x === s.x + 1 && c.y >= s.y && c.y < s.y + s.h).map(c => [c.y, c.color]));
+
+  it('draws only every second row of the channel (one lit cell, one dark), in the centre column', () => {
+    for (const t of [0, 1, 2, 3, 50]) {
       const cs = rnaCellsAt(slots, colours, t);
+      expect(new Set(cs.map(key)).size).toBe(cs.length);
+      slots.forEach(s => {
+        const mine = [...colAt(s, cs).keys()].sort((p, q) => p - q);
+        expect(mine.length).toBeGreaterThanOrEqual(Math.floor((s.h - 2) / 2));
+        expect(mine.length).toBeLessThanOrEqual(Math.ceil((s.h - 2) / 2));
+        expect(mine[0]).toBeGreaterThanOrEqual(s.y + 1);
+        expect(mine[mine.length - 1]).toBeLessThanOrEqual(s.y + s.h - 2);
+        for (let i = 1; i < mine.length; i++) expect(mine[i] - mine[i - 1]).toBe(2);   // a dark cell between bases
+      });
+      for (const c of cs) expect(slots.some(s => c.x === s.x + 1)).toBe(true);
+    }
+  });
+  it('row r of slot k shows base (k * 9 + (r - shift) / 2) when r - shift is even, shift = floor(t / 2)', () => {
+    for (const t of [0, 1, 3, 4, 17, 100, 143, 200, 287]) {
+      const cs = rnaCellsAt(slots, colours, t), shift = Math.floor(t / 2);
       slots.forEach((s, k) => {
+        const col = colAt(s, cs);
         for (let r = 1; r <= s.h - 2; r++) {
-          const cell = cs.find(c => c.x === s.x + 1 && c.y === s.y + r)!;
-          const base = RNA_SEQUENCE[mod(k * 9 + r - Math.floor(t / 4), 36)] as 'A' | 'U' | 'G' | 'C';
-          expect(cell.color).toBe(colours[base]);
+          const u = r - shift;
+          if (mod(u, 2) !== 0) { expect(col.has(s.y + r)).toBe(false); continue; }
+          const base = RNA_SEQUENCE[mod(k * 9 + u / 2, 36)] as 'A' | 'U' | 'G' | 'C';
+          expect(col.get(s.y + r)).toBe(colours[base]);
         }
       });
     }
-    const a = rnaCellsAt(slots, colours, 8), b = rnaCellsAt(slots, colours, 12);
-    const s = slots[0];
-    const col = (cs: InstrumentCell[]): string[] => cs.filter(c => c.x === s.x + 1 && c.y < s.y + s.h).sort((p, q) => p.y - q.y).map(c => c.color);
-    expect(col(b).slice(1)).toEqual(col(a).slice(0, -1));
-    expect(rnaCellsAt(slots, colours, 8)).toEqual(rnaCellsAt(slots, colours, 11));
   });
-  it('is periodic in 144 frames', () => {
+  it('scrolls down ONE CELL every 2 frames: smooth, and a base crosses 2 cells in 4 frames', () => {
+    const s = slots[0];
+    expect(rnaCellsAt(slots, colours, 4)).toEqual(rnaCellsAt(slots, colours, 5));      // holds for 2 frames
+    for (const t of [0, 2, 10, 40, 142]) {
+      const a = colAt(s, rnaCellsAt(slots, colours, t)), b = colAt(s, rnaCellsAt(slots, colours, t + 2));
+      let compared = 0;
+      for (const [y, color] of a) if (y + 1 <= s.y + s.h - 2) { expect(b.get(y + 1)).toBe(color); compared++; }
+      expect(compared).toBeGreaterThan(5);
+    }
+    expect(RNA_FRAMES_PER_BASE).toBe(4);
+  });
+  it('shows different parts of the sequence in different slots (the per-slot offset)', () => {
+    const cs = rnaCellsAt(slots, colours, 0);
+    const seqs = slots.slice(0, 2).map(s => [...colAt(s, cs).values()].join(''));
+    expect(seqs[0]).not.toBe(seqs[1]);
+  });
+  it('repeats exactly every 144 frames, and not sooner', () => {
     for (let t = 0; t < 144; t += 5) expect(rnaCellsAt(slots, colours, t + 144)).toEqual(rnaCellsAt(slots, colours, t));
+    for (const half of [36, 72]) expect(rnaCellsAt(slots, colours, half)).not.toEqual(rnaCellsAt(slots, colours, 0));
+    expect(T % 144).toBe(0);
   });
 });
 
@@ -227,18 +269,19 @@ describe('activity strip', () => {
   const levels = [0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 1, 2, 3, 2];
   const ST = stripStaticCells(levels);
 
-  it('is 14 lights of 2x2 cells with 1-cell gaps, inside STRIP and REV_ZONE', () => {
-    expect(STRIP).toEqual({ x: 137, y: 70, w: 41, h: 2 });
+  it('is 14 lights of 2 wide x 3 tall cells with 1-cell gaps, inside STRIP and REV_ZONE', () => {
+    expect(STRIP).toEqual({ x: 137, y: 69, w: 41, h: 3 });
     expect(inside(STRIP, REV_ZONE)).toBe(true);
-    expect(ST.length).toBe(56);
-    expect(new Set(ST.map(key)).size).toBe(56);
+    expect(ST.length).toBe(84);
+    expect(new Set(ST.map(key)).size).toBe(84);
     for (const c of ST) {
       expect(c.x).toBeGreaterThanOrEqual(STRIP.x); expect(c.x).toBeLessThan(STRIP.x + STRIP.w);
       expect(c.y).toBeGreaterThanOrEqual(STRIP.y); expect(c.y).toBeLessThan(STRIP.y + STRIP.h);
     }
     for (let i = 0; i < 14; i++) {
       const mine = ST.filter(c => c.x >= STRIP.x + 3 * i && c.x < STRIP.x + 3 * i + 2);
-      expect(mine.length).toBe(4);
+      expect(mine.length).toBe(6);
+      expect(new Set(mine.map(c => c.y)).size).toBe(3);
       expect(new Set(mine.map(c => c.color)).size).toBe(1);
       expect(mine[0].color).toBe(STRIP_GREENS[levels[i]]);
     }
@@ -260,7 +303,7 @@ describe('activity strip', () => {
       const cs = lit(t);
       if (cs.length) {
         on++;
-        expect(cs.length).toBe(4);
+        expect(cs.length).toBe(6);
         for (const c of cs) { expect(c.x).toBeGreaterThanOrEqual(lastX); expect(c.x).toBeLessThan(lastX + 2); expect(c.color).toBe(STRIP_GREENS[levels[13] + 1]); }
       }
       expect(lit(t + 48)).toEqual(cs);
@@ -275,9 +318,12 @@ describe('activity strip', () => {
   });
   it('STRIP_GREENS are distinct at 4 bits per channel, and from the board colours', () => {
     expect(STRIP_GREENS.length).toBe(5);
-    expect(STRIP_GREENS[0]).toBe('#0e1a0e');
-    expect(STRIP_GREENS[4]).toBe('#39ff14');
+    expect([...STRIP_GREENS]).toEqual(['#0e1a0e', '#1d6a18', '#28a51a', '#31d417', '#39ff14']);
     const qs = [...STRIP_GREENS, '#0a0a0a', '#111111'].map(q4);
     expect(new Set(qs).size).toBe(7);
+    // levels can be told apart: every step up gains at least 2 bins of green
+    const g = STRIP_GREENS.map(c => parseInt(q4(c).split(',')[1]));
+    for (let i = 1; i < 5; i++) expect(g[i] - g[i - 1]).toBeGreaterThanOrEqual(2);
+    expect(g[1]).toBeGreaterThanOrEqual(5);                     // the lowest lit level is already a visible green
   });
 });
