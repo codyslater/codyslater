@@ -27,36 +27,37 @@ jobs:
       #             the activity strip and the pace (heartbeat, firing rate)
       # Both are anchored to the last active day, not to today, so on a quiet day
       # the render is byte-identical and the commit step skips.
-      # If the calendar cannot be read, fall back to the date of the last public
-      # event (the old source), then to today, and render a neutral week.
+      # If the calendar cannot be read or parsed, this step FAILS and nothing is
+      # rendered: yesterday's banner stays and the run is red. It used to fall
+      # back to the date of the last public event and a neutral week, which
+      # published a different banner (an older date, an invented strip) for the
+      # day of any API hiccup and flipped back the next day. A stale banner is
+      # right; a wrong one is not.
       - name: resolve seed and activity
         id: seed
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          SEED=""; ACTIVITY=""
           QUERY='query($login:String!){user(login:$login){contributionsCollection{contributionCalendar{weeks{contributionDays{date contributionCount contributionLevel}}}}}}'
-          if gh api graphql -F login=codyslater -f query="$QUERY" > calendar.json 2> calendar.err \
-             && OUT=$(npx tsx generator/resolve-activity.ts calendar.json); then
-            SEED=$(printf '%s\n' "$OUT" | sed -n 's/^seed=//p')
-            ACTIVITY=$(printf '%s\n' "$OUT" | sed -n 's/^activity=//p')
-          else
-            echo "::warning::contribution calendar unavailable; falling back to the public events feed"
+          if ! gh api graphql -F login=codyslater -f query="$QUERY" > calendar.json 2> calendar.err; then
+            echo "::error::the contribution calendar call failed; nothing rendered, the banner stays as it is"
             cat calendar.err || true
+            exit 1
           fi
+          if ! OUT=$(npx tsx generator/resolve-activity.ts calendar.json); then
+            echo "::error::the contribution calendar response is not usable; nothing rendered, the banner stays as it is"
+            exit 1
+          fi
+          SEED=$(printf '%s\n' "$OUT" | sed -n 's/^seed=//p')
+          ACTIVITY=$(printf '%s\n' "$OUT" | sed -n 's/^activity=//p')
           if ! [[ "$SEED" =~ ^[0-9]{8}$ ]] || ! [[ "$ACTIVITY" =~ ^[0-4](,[0-4]){13}$ ]]; then
-            ACTIVITY=""
-            SEED=$(curl -sf --connect-timeout 5 --max-time 10 \
-              "https://api.github.com/users/codyslater/events/public" \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              | jq -r 'if type == "array" then (.[0].created_at // empty) else empty end' \
-              | cut -dT -f1 | tr -d '-' || true)
-            if ! [[ "$SEED" =~ ^[0-9]{8}$ ]]; then SEED=$(date +%Y%m%d); fi
+            echo "::error::the resolver printed an unusable seed or activity; nothing rendered, the banner stays as it is"
+            exit 1
           fi
           rm -f calendar.json calendar.err
           echo "seed=$SEED" >> "$GITHUB_OUTPUT"
           echo "activity=$ACTIVITY" >> "$GITHUB_OUTPUT"
-          echo "seed $SEED, activity ${ACTIVITY:-<neutral week>}"
+          echo "seed $SEED, activity $ACTIVITY"
       # The render fails closed: main.ts runs the full-loop invariant sweep on
       # THIS seed's world, between rendering and encoding, and exits non-zero
       # with the violations rather than writing banner.gif. The tests below gate
@@ -65,12 +66,7 @@ jobs:
         env:
           SEED: ${{ steps.seed.outputs.seed }}
           ACTIVITY: ${{ steps.seed.outputs.activity }}
-        run: |
-          if [ -n "$ACTIVITY" ]; then
-            npm run render -- --seed "$SEED" --activity "$ACTIVITY" --out banner.gif
-          else
-            npm run render -- --seed "$SEED" --out banner.gif
-          fi
+        run: npm run render -- --seed "$SEED" --activity "$ACTIVITY" --out banner.gif
       # CI runs the environment-drift canaries (reference byte-identity,
       # determinism, fonts, geometry) plus the fast pure-data tests for the
       # inputs this workflow feeds in. The full suite used to exceed runner

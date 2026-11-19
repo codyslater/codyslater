@@ -6,8 +6,8 @@
 //     activity=1,0,2,2,1,2,2,2,1,2,1,2,4,2
 //
 // Exit 3 with a reason on stderr when the file is not a usable calendar or shows
-// no active day: the workflow then keeps its older seed source and omits
-// --activity, which the generator reads as a neutral week.
+// no active day: the workflow step then fails, nothing is rendered, and the
+// banner stays as it was (there is no second seed source to fall back to).
 import fs from 'node:fs';
 import { activityFromCalendar, daysFromGraphql } from './calendar.js';
 
