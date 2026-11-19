@@ -2,13 +2,13 @@ import { createCanvas, type Canvas, type SKRSContext2D } from '@napi-rs/canvas';
 import { registerFonts } from './fonts.js';
 import {
   ACCENT_LIST, BOARD, BOARD_EDGE, BOARD_KEEPOUT, BOARD_RIGHT, CELL, COLORS, DRESSING_COLORS, FABRIC_COLOR,
-  FINGER_W, FINGERS, GOLD, GRID_H, GRID_W, HEIGHT, NAME, NAME_BASELINE_PX, NAME_FONT_PX, NAME_X_PX,
-  NAME_ZONE, REV_BASELINE_PX, REV_FONT_PX, REV_RIGHT_PX, REV_ZONE, VOID_BG, WIDTH, cellRect, revFromSeed,
+  FINGER_W, FINGERS, GOLD, GRID_H, GRID_W, HEIGHT, REV_BASELINE_PX, REV_FONT_PX, REV_RIGHT_PX, REV_ZONE, VOID_BG, WIDTH, cellRect, revFromSeed,
 } from './layout.js';
 import { drawComponent, LEVEL_LIT } from './sprites.js';
 import { SLOTS_PER_FRAME, FINGER_FLASH, contestedRingColor, washAt } from './signals.js';
 import { visibleAges } from './creatures.js';
 import { answerSpikeAt, answerWashAt, wakeCellsAt } from './boardlife.js';
+import { fanStepAt, idleCellsAt, plateCellsAt, plateStaticCells } from './idle.js';
 import { tissueCellsAt } from './tissue.js';
 import type { BoardComponent, DressingFeature, SoupState, World } from './types.js';
 
@@ -18,11 +18,11 @@ import type { BoardComponent, DressingFeature, SoupState, World } from './types.
 // §13.2, and the whole-component wash (ladder -> accent ramp at the pinned
 // stops). Plus the void: §13.3's soup, drawn at four generation ages at once.
 //
-// §12.6.2's idle vocabulary (fan rotation, status LEDs, activity blips, bus
-// flow) is deliberately NOT built: §13.5 leaves it "neither validated nor
-// retired", the calibration prototype does not implement any of it, and every
-// budget in §13.5 excludes it. Building it would require re-measuring those
-// budgets, so it stays out of the shipped loop.
+// The board's idle life (the fan's blades, status LEDs, the CPU heartbeat, bus bars, sprouts at the
+// connector) is built as data in `idle.ts` and painted here: statics in `drawStatic`, the rest per
+// frame over the takeover washes and under the signals. The name is a dot-matrix plate, from the same
+// module. §13.5's measured budgets cover the flows and the void; the idle layer's own budget
+// (at most 90 dynamic cells a frame, fan blades extra) is gated in `idle.test.ts`.
 // ---------------------------------------------------------------------------
 
 const px = (c: number): number => c * CELL;
@@ -159,14 +159,12 @@ function drawMountHole(ctx: SKRSContext2D, hole: { x: number; y: number }): void
   ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI * 2); ctx.fill();
 }
 
-/** §13.5's legend as amended 2026-07-25: the two ends of one printed line —
- * name bottom-LEFT, REV right-aligned at the board's RIGHT edge, both `#888888`
- * on one shared baseline. The name no longer participates in any cascade —
- * §13.2 leaves the board lit in every frame, so the legend is simply lit. */
+/** §13.5's legend as amended 2026-07-25: the REV line, right-aligned at the board's RIGHT edge,
+ * `#888888`, baseline 22 px below the band's top edge. The name that used to share its baseline is
+ * now the dot-matrix plate (owner, 2026-11-19: "i liked it on a plate too but not as big as the last
+ * one you showed"), drawn from `idle.ts`'s cells, so no name text is drawn here. */
 function drawTextLayer(ctx: SKRSContext2D, seed: number): void {
   ctx.fillStyle = COLORS.muted;
-  ctx.font = `${NAME_FONT_PX}px "JetBrains Mono"`;
-  ctx.fillText(NAME, NAME_X_PX, px(NAME_ZONE.y) + NAME_BASELINE_PX);
   // Right-aligned so the line ends on the board edge whatever the date's width.
   // `textAlign` is restored immediately: the static layer is drawn once, but a
   // leaked alignment would silently move every later `fillText` on this context.
@@ -180,7 +178,7 @@ function drawTextLayer(ctx: SKRSContext2D, seed: number): void {
  * The base layer. Draw order is load-bearing:
  *
  *   substrate -> mount holes -> dressing -> silkscreen -> TRACES (resting) -> FABRIC ->
- *   hardware -> connector gold -> tissue arbor (void) -> legend
+ *   hardware -> connector gold -> tissue arbor (void) -> idle statics (sprouts, LEDs) -> name plate -> REV line
  *
  * The fabric goes down after the traces and is skipped wherever a trace already
  * occupies the cell (§13.1: "beneath the hardware and never over a live trace"),
@@ -249,6 +247,11 @@ export function drawStatic(world: World): Canvas {
   // The tissue's resting arbor lives in the void, which holds no static ink and none
   // of the legend, so it can go down before the text without touching it.
   for (const c of world.tissue.staticCells) cell(ctx, c.x, c.y, c.color);
+
+  // The idle layer's resting cells (sprouts at rest, LEDs off) sit on bare substrate by construction;
+  // the name plate is a module of its own, steady state: the whole name lit.
+  for (const c of world.idle.staticCells) cell(ctx, c.x, c.y, c.color);
+  for (const c of plateStaticCells()) cell(ctx, c.x, c.y, c.color);
 
   drawTextLayer(ctx, world.seed);
   return canvas;
@@ -389,6 +392,33 @@ export function drawSoup(ctx: SKRSContext2D, st: SoupState, colors: readonly str
 }
 
 // ---------------------------------------------------------------------------
+// The fan: four bright blades on a dark disc (the sketch's final version, which the owner liked)
+// ---------------------------------------------------------------------------
+
+const FAN_SHROUD = '#5a5a5a', FAN_CORNER = '#2a2a2a', FAN_DISC = '#0c0c0c', FAN_BLADE = '#d8d8d8';
+
+/**
+ * Redraws the whole 8x8 fan footprint at blade phase `step` (0..3, 22.5 degrees each): the shroud, the
+ * dark disc with its corners, a hub in the fan's accent, and four bright blades. It repaints every cell
+ * of the footprint, so it does not matter what a heatsink wash did to them. Called AFTER the washes.
+ */
+function drawFan(ctx: SKRSContext2D, fan: BoardComponent, step: number): void {
+  const ax = fan.body.x, ay = fan.body.y;
+  box(ctx, ax - 1, ay - 1, 8, 1, FAN_SHROUD); box(ctx, ax - 1, ay + 6, 8, 1, FAN_SHROUD);
+  box(ctx, ax - 1, ay, 1, 6, FAN_SHROUD); box(ctx, ax + 6, ay, 1, 6, FAN_SHROUD);
+  const hub = hot(fan.accent ?? ACCENT_LIST[2], 0.35);
+  for (let y = 0; y < 6; y++)
+    for (let x = 0; x < 6; x++) {
+      const dx = x - 2.5, dy = y - 2.5, r = Math.hypot(dx, dy);
+      if (r > 3.3) { cell(ctx, ax + x, ay + y, FAN_CORNER); continue; }
+      cell(ctx, ax + x, ay + y, FAN_DISC);
+      if (r < 0.9) { cell(ctx, ax + x, ay + y, hub); continue; }
+      const deg = (Math.atan2(dy, dx) * 180) / Math.PI + 360 + step * 22.5;
+      if (deg % 90 < 40) cell(ctx, ax + x, ay + y, FAN_BLADE);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The frame
 // ---------------------------------------------------------------------------
 
@@ -409,6 +439,7 @@ export function createRenderer(world: World): (t: number) => Canvas {
   const staticLayer = drawStatic(world);
   const baseData = readFrame(staticLayer);
   const nodes = [...world.takeovers.keys()];
+  const fan = world.components.find(c => c.kind === 'fan');
   const canvas = createCanvas(WIDTH, HEIGHT);
   const ctx = canvas.getContext('2d');
 
@@ -441,6 +472,14 @@ export function createRenderer(world: World): (t: number) => Canvas {
       const f = FINGERS[e.finger];
       box(ctx, f.x, f.y, FINGER_W, f.h, mixOnBg(e.color, Math.max(0.35, 1 - age / FINGER_FLASH)));
     }
+
+    // The board's idle life (sprouts, LEDs, the heartbeat, bus bars, the plate's retyping) goes over the
+    // takeover washes, under the wake and everything after it, so a signal or an answer always wins; the
+    // answer's chip wash, painted later, covers the heartbeat on the CPU. The fan comes after the washes
+    // so a heatsink wash cannot erase its blades.
+    for (const c of idleCellsAt(world.idle, t, world.T)) cell(ctx, c.x, c.y, c.color);
+    for (const c of plateCellsAt(t, world.T)) cell(ctx, c.x, c.y, c.color);
+    if (fan) drawFan(ctx, fan, fanStepAt(t));
 
     // The wake: copper a flow has just left, in that flow's colour, stepping down.
     for (const c of wakeCellsAt(world.wake, t)) cell(ctx, c.x, c.y, mixOnBg(c.color, WAKE_LEVELS[c.step]));

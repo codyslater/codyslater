@@ -84,6 +84,20 @@ export const TEXT_ZONES: Rect[] = [NAME_ZONE, THESIS_ZONE, REV_ZONE];
 // Both sit on ONE shared baseline 22 px below the band's top edge (the two zones
 // share y = 66), restoring §12.7's "same colour, same weight, same baseline,
 // with size the only hierarchy" at §13.5's sizes. Both #888888.
+/** The name's lit colour: the dot-matrix plate's lit dots (owner, 2026-11-19: "i liked it on a plate
+ * too but not as big as the last one you showed", and green). */
+export const NAME_COLOR = '#39ff14';
+/**
+ * The name plate (owner, 2026-11-19): a small dot-matrix display module inside NAME_ZONE (cells
+ * x 2..79, y 66..77) in place of the old text label. 70 x 11 cells at x 10, so it clears the
+ * bottom-left mount hole's keepout ring (px x 16..36) and ends on the zone's last column; at y 66
+ * its last two rows lie on the inner keep-out line (row 75), which the module simply covers, and the
+ * board edge (row 77) stays clear. Layers: a 1-cell bezel, 1 cell of padding, then a 66 x 7 dot
+ * area (`idle.ts` draws it).
+ * `NAME_X_PX` / `NAME_FONT_PX` / `NAME_BASELINE_PX` below are the retired text label's numbers, kept
+ * only because layout.test.ts pins them; nothing draws the label any more.
+ */
+export const PLATE: Rect = { x: 10, y: 66, w: 70, h: 11 };
 export const NAME_X_PX = (NAME_ZONE.x + 9) * CELL;
 export const NAME_FONT_PX = 15;
 export const NAME_BASELINE_PX = 22;

@@ -11,6 +11,7 @@ import {
 } from './layout.js';
 import { buildNets } from './growth.js';
 import { wakeCellsAt } from './boardlife.js';
+import { idleCellsAt } from './idle.js';
 import { MIN_TRANSITS, buildFlows, distanceToConnector } from './signals.js';
 import { mulberry32 } from './rng.js';
 import { createRenderer, readFrame } from './render.js';
@@ -62,6 +63,8 @@ function digest(w: World): string {
     answers: w.answers.map(a => ({ r: a.recording, c: a.component, arrive: a.arriveFrame, path: a.path, hidden: a.hidden })),
   }));
   for (const t of [0, 71, 143, 215]) h.update(JSON.stringify(wakeCellsAt(w.wake, t)));
+  h.update(JSON.stringify(w.idle));
+  for (const t of [0, 71, 143, 215]) h.update(JSON.stringify(idleCellsAt(w.idle, t, w.T)));
   return h.digest('hex');
 }
 
@@ -81,7 +84,7 @@ describe('§5 determinism and the amended CLI', () => {
   // `Math.random()` in a rarely-taken branch would pass every corpus test and
   // still break byte-identical daily regeneration.
   const SIM_AND_RENDER = [
-    'boardlife.ts', 'continuity.ts', 'creatures.ts', 'fonts.ts', 'gif.ts', 'growth.ts', 'layout.ts',
+    'boardlife.ts', 'continuity.ts', 'creatures.ts', 'fonts.ts', 'gif.ts', 'growth.ts', 'idle.ts', 'layout.ts',
     'render.ts', 'rng.ts', 'signals.ts', 'sprites.ts', 'tissue.ts', 'timeline.ts', 'types.ts',
   ];
 

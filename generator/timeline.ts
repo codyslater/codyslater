@@ -15,6 +15,7 @@ import {
 import { createRenderer, drawStatic, readFrame } from './render.js';
 import { mulberry32 } from './rng.js';
 import { buildAnswers, buildWake } from './boardlife.js';
+import { buildIdle } from './idle.js';
 import { buildTissue } from './tissue.js';
 
 export const mod = (n: number, m: number): number => ((n % m) + m) % m;
@@ -77,6 +78,9 @@ export function buildWorld(seed: number, T = DEFAULT_T): World {
   } as World;
   world.wake = buildWake(world);
   world.answers = buildAnswers(world, tissue.recordings);
+  // The idle layer reads the assembled board and the tissue's recordings; its own stream is
+  // `seed ^ 0x1d1e`, so nothing above moves.
+  world.idle = buildIdle(world, tissue.recordings);
   return world;
 }
 

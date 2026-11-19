@@ -1,4 +1,5 @@
 import type { Answer, Wake } from './boardlife.js';
+import type { Idle } from './idle.js';
 import type { Tissue } from './tissue.js';
 
 export interface Rect { x: number; y: number; w: number; h: number; }
@@ -201,4 +202,6 @@ export interface World {
   wake: Wake;
   /** the board's answer to each of the tissue's recordings */
   answers: Answer[];
+  /** the board's idle life: sprouts at the connector, LEDs, the heartbeat, bus bars (built after the tissue) */
+  idle: Idle;
 }

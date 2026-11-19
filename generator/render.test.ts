@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
-  BOARD_RIGHT, CELL, COLORS, FABRIC_COLOR, FINGERS, GOLD, GRID_H, GRID_W, HEIGHT, NAME, NAME_ZONE,
-  REV_RIGHT_PX, REV_ZONE, THESIS_ZONE, VOID_BG, WIDTH,
+  BOARD_RIGHT, CELL, COLORS, FABRIC_COLOR, FINGERS, GOLD, GRID_H, GRID_W, HEIGHT, NAME, NAME_COLOR, NAME_ZONE,
+  PLATE, REV_RIGHT_PX, REV_ZONE, THESIS_ZONE, VOID_BG, WIDTH,
 } from './layout.js';
 import {
   COPPER_REST, PALETTE, WAKE_LEVELS, createRenderer, drawStatic, hot, mixOnBg, readFrame, trailColorAt,
 } from './render.js';
-import { ANSWER_FADE, ANSWER_HOLD, answerSpikeAt, wakeCellsAt } from './boardlife.js';
+import { ANSWER_FADE, ANSWER_HOLD, answerSpikeAt, answerWashAt, wakeCellsAt } from './boardlife.js';
+import { PLATE_COLOURS, idleCellsAt, plateCellsAt, plateStaticCells } from './idle.js';
 import { TISSUE_COLOURS, tissueCellsAt } from './tissue.js';
 import { FINGER_FLASH, TRAIL, flowDrawn } from './signals.js';
 import { visibleAges } from './creatures.js';
@@ -195,12 +196,14 @@ describe('the static board', () => {
     expect(hexAt(data, FINGERS[0].x + 1, FINGERS[0].y + 1)).toBe(GOLD);
   });
 
-  it('prints the name in NAME_ZONE, the REV line in REV_ZONE, and nothing in the retired THESIS_ZONE', () => {
+  it('prints the name on the plate in NAME_ZONE, the REV line in REV_ZONE, and nothing in the retired THESIS_ZONE', () => {
     const data = staticData();
-    // antialiased silkscreen: only the glyph cores land on the exact tone, and
-    // at the REV line's 11 px almost none of them do — so the name is checked on
-    // the exact tone and the REV line on `ink` (see the helper).
-    expect(countPixel(data, NAME_ZONE, COLORS.muted)).toBeGreaterThan(20);
+    // The owner asked for the name on a dot-matrix plate on 2026-11-19 ("i liked it on a plate too but
+    // not as big as the last one you showed"), so the name is no longer antialiased gray text: its ink
+    // is the plate's lit dots, `#39ff14`, whole cells, which land on the exact colour. (This test used to
+    // count `#888888` glyph cores in NAME_ZONE, which now holds only the plate's four pins.)
+    expect(countPixel(data, NAME_ZONE, NAME_COLOR)).toBeGreaterThan(100 * CELL * CELL);
+    // the REV line is untouched: antialiased gray ink, checked as `ink` (see the helper)
     expect(countInk(data, REV_ZONE)).toBeGreaterThan(60);
     expect(countInk(data, THESIS_ZONE)).toBe(0);
     expect(countPixel(data, THESIS_ZONE, COLORS.muted)).toBe(0);
@@ -225,36 +228,35 @@ describe('the static board', () => {
     expect(cols[0]).toBeGreaterThan(GRID_W / 2);
   });
 
-  it('the two legend lines share one line of the band — not the old stack', () => {
+  it('the plate and the REV line share one line of the band — not the old stack', () => {
+    // 2026-11-19: the name is now the plate, so the name half of this check is "the plate lies wholly
+    // inside NAME_ZONE"; the REV half is unchanged (its ink is gray, in REV_ZONE).
     const data = staticData();
-    const rows = (zone: typeof REV_ZONE): number[] => {
-      const ys: number[] = [];
-      for (let y = zone.y; y < zone.y + zone.h; y++)
-        if (countInk(data, { x: zone.x, y, w: zone.w, h: 1 }) > 0) ys.push(y);
-      return ys;
-    };
-    const name = rows(NAME_ZONE), rev = rows(REV_ZONE);
-    expect(name.length).toBeGreaterThan(0);
+    expect(PLATE.x).toBeGreaterThanOrEqual(NAME_ZONE.x);
+    expect(PLATE.y).toBeGreaterThanOrEqual(NAME_ZONE.y);
+    expect(PLATE.x + PLATE.w).toBeLessThanOrEqual(NAME_ZONE.x + NAME_ZONE.w);
+    expect(PLATE.y + PLATE.h).toBeLessThanOrEqual(NAME_ZONE.y + NAME_ZONE.h);
+    const rev: number[] = [];
+    for (let y = REV_ZONE.y; y < REV_ZONE.y + REV_ZONE.h; y++)
+      if (countInk(data, { x: REV_ZONE.x, y, w: REV_ZONE.w, h: 1 }) > 0) rev.push(y);
     expect(rev.length).toBeGreaterThan(0);
-    // One shared baseline means the two lines OVERLAP vertically. Under the
-    // superseded stacked geometry (REV baseline +40 against the name's +22) the
-    // REV rows sat entirely below the name's, so this discriminates rather than
-    // passing on any layout. Exact bottom rows are NOT compared: `cody_slater`
-    // carries a descender and an underscore that `REV 2026.07.24` has not.
-    expect(rev[0]).toBeLessThanOrEqual(name[name.length - 1]);
-    expect(name[0]).toBeLessThanOrEqual(rev[rev.length - 1]);
+    // One shared line means the two overlap vertically (the old stacked geometry put REV wholly below).
+    expect(rev[0]).toBeLessThanOrEqual(PLATE.y + PLATE.h - 1);
+    expect(PLATE.y).toBeLessThanOrEqual(rev[rev.length - 1]);
   });
 
-  it('§12.7: the legend is board print — no `$`, no cursor, no glow halo', () => {
-    // "Removed with the terminal treatment: the `$` prefix, the blinking white
-    // block cursor, the `#39ff14` name colour, the bold ~28 px weight, and the
-    // 2-step glow halo." §13.5 carries that treatment; only the geometry moved.
+  it('§12.7: the legend is board print — no `$`, no cursor block, no glow halo', () => {
+    // "Removed with the terminal treatment: the `$` prefix, the blinking white block cursor, the
+    // `#39ff14` name colour, the bold ~28 px weight, and the 2-step glow halo."
+    // 2026-11-19: the owner asked for the name back in green, on a plate ("i liked it on a plate too"),
+    // so `#39ff14` is now REQUIRED in NAME_ZONE; the rest of the treatment stays removed: no `$`, no
+    // white cursor block (the plate's steady state has none), no `#ffffff` or `#f0f0f0` halo step.
     expect(NAME).toBe('cody_slater');
     expect(NAME).not.toContain('$');
     const data = staticData();
-    expect(countPixel(data, NAME_ZONE, COLORS.white)).toBe(0);      // no block cursor
-    expect(countPixel(data, NAME_ZONE, '#39ff14')).toBe(0);         // no terminal green
+    expect(countPixel(data, NAME_ZONE, COLORS.white)).toBe(0);      // no white cursor block
     expect(countPixel(data, NAME_ZONE, COLORS.offwhite)).toBe(0);   // no halo step
+    expect(countPixel(data, NAME_ZONE, NAME_COLOR)).toBeGreaterThan(0);
   });
 
   it('§12.2: the fiberglass grid is intersection DOTS at 8-cell pitch, not 1 px lines', () => {
@@ -316,13 +318,14 @@ describe('the frame', () => {
     const w = world();
     const render = renderer();
     let checked = 0, ragged = 0;
-    for (const t of [0, 97, 200]) {
+    for (const t of [0, 97, 200, 213]) {
       const d = dataOf(render(t));
       const cells: { x: number; y: number }[] = [];
       for (const f of w.flows) cells.push(...flowDrawn(f, t, T));
       for (const age of visibleAges(t, T))
         for (const p of w.soup.frames[age].parts) cells.push({ x: Math.round(p.x), y: Math.round(p.y) });
       cells.push(...wakeCellsAt(w.wake, t), ...tissueCellsAt(w.tissue, t), ...w.tissue.staticCells);
+      cells.push(...w.idle.staticCells, ...idleCellsAt(w.idle, t, T), ...plateStaticCells(), ...plateCellsAt(t, T));
       for (const c of cells) {
         if (c.x < 0 || c.x >= GRID_W || c.y < 0 || c.y >= GRID_H) continue;
         const i0 = ((c.y * CELL) * WIDTH + c.x * CELL) * 4;
@@ -516,6 +519,114 @@ describe('the living board', () => {
     }
     expect(JSON.stringify([...stray])).toBe('[]');
     expect(tissueSeen).toBeGreaterThan(1000);
+  });
+});
+
+describe('the idle layer and the name plate', () => {
+  const fan = (): { x: number; y: number; w: number; h: number } => world().components.find(c => c.kind === 'fan')!.rect;
+  const cellsDiffer = (a: Uint8ClampedArray, b: Uint8ClampedArray, r: { x: number; y: number; w: number; h: number }, skip: Set<string>): number => {
+    let n = 0;
+    for (let y = r.y; y < r.y + r.h; y++)
+      for (let x = r.x; x < r.x + r.w; x++) if (!skip.has(`${x},${y}`) && hexAt(a, x, y) !== hexAt(b, x, y)) n++;
+    return n;
+  };
+  const covering = (w: World, t: number): Set<string> =>
+    new Set([...flowCells(w, t), ...spikeCells(w, t), ...soupCells(w, t)]);
+
+  it('paints the idle static cells — sprouts at rest, LEDs off — in drawStatic', () => {
+    const w = world();
+    const data = staticData();
+    expect(w.idle.staticCells.length).toBeGreaterThan(30);
+    for (const c of w.idle.staticCells) expect(`${c.x},${c.y} ${hexAt(data, c.x, c.y)}`).toBe(`${c.x},${c.y} ${c.color}`);
+  });
+
+  it('paints each idle overlay cell in its colour unless a flow, a spike, an answer wash or the soup covers it', () => {
+    const w = world();
+    const render = renderer();
+    let checked = 0;
+    const kinds = new Set<string>();
+    for (const t of [...SPREAD, 12, 13, 100, 103]) {
+      const d = dataOf(render(t));
+      const washed = answerWashAt(w.answers, t, T).map(a => w.components[a.component].rect);
+      const covered = covering(w, t);
+      for (const c of idleCellsAt(w.idle, t, T)) {
+        const k = `${c.x},${c.y}`;
+        if (covered.has(k) || washed.some(r => c.x >= r.x && c.x < r.x + r.w && c.y >= r.y && c.y < r.y + r.h)) continue;
+        expect(`t${t} ${k} ${hexAt(d, c.x, c.y)}`).toBe(`t${t} ${k} ${c.color}`);
+        kinds.add(c.color);
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThan(300);
+    expect(kinds.size).toBeGreaterThanOrEqual(6);        // heart ramp, bus bar, LEDs and sprouts all exercised
+  });
+
+  it('turns the fan: its region differs between frames 0 and 3, and is identical between 0 and 12', () => {
+    const w = world();
+    const render = renderer();
+    const r = fan();
+    const f0 = dataOf(render(0)), f3 = dataOf(render(3)), f6 = dataOf(render(6)), f9 = dataOf(render(9)), f12 = dataOf(render(12));
+    const skip = (a: number, b: number): Set<string> => new Set([...covering(w, a), ...covering(w, b)]);
+    expect(cellsDiffer(f0, f3, r, skip(0, 3))).toBeGreaterThan(3);
+    expect(cellsDiffer(f0, f12, r, skip(0, 12))).toBe(0);
+    for (const [a, b, fa, fb] of [[0, 6, f0, f6], [0, 9, f0, f9], [3, 6, f3, f6], [3, 9, f3, f9], [6, 9, f6, f9]] as const)
+      expect(cellsDiffer(fa, fb, r, skip(a, b))).toBeGreaterThan(3);
+    // four clearly visible bright blades: whole cells of the blade tone in every step
+    for (const [t, f] of [[0, f0], [3, f3], [6, f6], [9, f9]] as const) {
+      let blade = 0;
+      for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++)
+        if (hexAt(f, x, y) === '#d8d8d8' && !covering(w, t).has(`${x},${y}`)) blade++;
+      expect(`t${t} ${blade}`).not.toBe(`t${t} 0`);
+      expect(blade).toBeGreaterThanOrEqual(5);
+    }
+  });
+
+  it('the heartbeat never shows through an answer\'s wash of the CPU', () => {
+    const w = world();
+    const cpuIdx = w.components.findIndex(c => c.kind === 'cpuSocket');
+    const r = w.components[cpuIdx].rect;
+    const t = 100;                                        // 100 mod 24 = 4: the beat is lit
+    const answer = { recording: { frame: 0, finger: 0, accent: '#ff2d78' }, path: [], component: cpuIdx, arriveFrame: t - 1 };
+    const noHeart = { ...w.idle, heart: { x: 0, y: 0, w: 0, h: 0 } };
+    const wash = (world_: World): Uint8ClampedArray => dataOf(createRenderer(world_)(t));
+    const plain = wash({ ...w, answers: [], idle: noHeart });
+    const withBeat = wash({ ...w, answers: [], idle: w.idle });
+    const washedNoBeat = wash({ ...w, answers: [answer], idle: noHeart });
+    const washedBeat = wash({ ...w, answers: [answer], idle: w.idle });
+    expect(cellsDiffer(plain, withBeat, r, covering(w, t))).toBeGreaterThan(10);          // the beat IS drawn, unwashed
+    expect(cellsDiffer(washedNoBeat, washedBeat, r, covering(w, t))).toBe(0);             // and the wash wins
+  });
+
+  it('paints the plate in drawStatic: whole dots, the full name lit, the old text label gone', () => {
+    const data = staticData();
+    for (const c of plateStaticCells()) expect(`${c.x},${c.y} ${hexAt(data, c.x, c.y)}`).toBe(`${c.x},${c.y} ${c.color}`);
+    // every pixel of the plate is one of the plate's own colours: no antialiased text anywhere in it
+    for (let y = PLATE.y * CELL; y < (PLATE.y + PLATE.h) * CELL; y++)
+      for (let x = PLATE.x * CELL; x < (PLATE.x + PLATE.w) * CELL; x++) {
+        const i = (y * WIDTH + x) * 4;
+        const hex = `#${((data[i] << 16) | (data[i + 1] << 8) | data[i + 2]).toString(16).padStart(6, '0')}`;
+        if (!PLATE_COLOURS.includes(hex)) throw new Error(`pixel ${x},${y} is ${hex}`);
+      }
+  });
+
+  it('paints the plate\'s retyping frames, every plate cell a uniform block, never white', () => {
+    const render = renderer();
+    for (const t of [0, 203, 204, 206, 207, 213, 222, 237, 240, 287]) {
+      const d = dataOf(render(t));
+      const want = new Map(plateStaticCells().map(c => [`${c.x},${c.y}`, c.color]));
+      for (const c of plateCellsAt(t, T)) want.set(`${c.x},${c.y}`, c.color);
+      for (const [k, color] of want) {
+        const [x, y] = k.split(',').map(Number);
+        for (let dy = 0; dy < CELL; dy++)
+          for (let dx = 0; dx < CELL; dx++) {
+            const i = (((y * CELL) + dy) * WIDTH + x * CELL + dx) * 4;
+            const hex = `#${((d[i] << 16) | (d[i + 1] << 8) | d[i + 2]).toString(16).padStart(6, '0')}`;
+            if (hex !== color) throw new Error(`t${t} cell ${k}: ${hex}, want ${color}`);
+          }
+      }
+      expect(countPixel(d, NAME_ZONE, COLORS.white)).toBe(0);
+      expect(countPixel(d, NAME_ZONE, COLORS.offwhite)).toBe(0);
+    }
   });
 });
 
