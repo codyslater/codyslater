@@ -9,10 +9,10 @@ import {
 import { ANSWER_FADE, ANSWER_HOLD, answerSpikeAt, answerWashAt, wakeCellsAt } from './boardlife.js';
 import { PLATE_COLOURS, idleCellsAt, plateCellsAt, plateStaticCells } from './idle.js';
 import { TISSUE_COLOURS, tissueCellsAt } from './tissue.js';
-import { FINGER_FLASH, TRAIL, flowDrawn } from './signals.js';
+import { FINGER_FLASH, TRAIL, flowDrawn, washAt } from './signals.js';
 import { visibleAges } from './creatures.js';
 import {
-  INSTRUMENT_COLOURS, RNA_BASE_COLOURS, RNA_SEQUENCE, SCOPE, SCOPE_BASELINE, SCOPE_COLS, STRIP, STRIP_GREENS, repressilatorLevelsAt, rnaCellsAt,
+  INSTRUMENT_COLOURS, RNA_BASE_COLOURS, RNA_CHANNEL_DARK, RNA_SEQUENCE, SCOPE, SCOPE_BASELINE_ALPHA, SCOPE_COLS, STRIP, STRIP_GREENS, repressilatorLevelsAt, rnaCellsAt, rnaChannelCells,
   scopeCellsAt, scopeStaticCells, stripCellsAt, stripStaticCells,
 } from './instruments.js';
 import { buildWorld } from './timeline.js';
@@ -97,8 +97,8 @@ const dimmSlots = (w: World): { x: number; y: number; w: number; h: number }[] =
   w.components.filter(c => c.kind === 'dimmSlot').map(c => c.body).sort((a, b) => a.x - b.x);
 /** the accents that are not neural green (the tissue's and the name's), in the world's order */
 const nonNeural = (w: World): string[] => w.accents.filter(a => a !== ACCENTS.neural);
-const REP_ALPHAS = [0.3, 0.475, 0.65, 0.825, 1.0];
-/** light i (protein A, B, C) at level l: the i-th non-green accent at 30/47.5/65/82.5/100 percent on the board */
+const REP_ALPHAS = [0.42, 0.565, 0.71, 0.855, 1.0];
+/** light i (protein A, B, C) at level l: the i-th non-green accent at 42/56.5/71/85.5/100 percent on the board */
 const repColour = (w: World, i: number, level: number): string => mixOnBg(nonNeural(w)[i], REP_ALPHAS[level]);
 /** A, U, G, C: fixed colours at full value, the same for every world */
 const RNA_BASES = (_w: World): Record<'A' | 'U' | 'G' | 'C', string> => ({ ...RNA_BASE_COLOURS });
@@ -228,11 +228,9 @@ describe('the static board', () => {
     // the REV line is untouched: antialiased gray ink, checked as `ink` (see the helper)
     expect(countInk(data, REV_ZONE)).toBeGreaterThan(60);
     // 2026-11-19: the owner chose the spike scope for THESIS_ZONE. It is the one thing in the zone, and
-    // its grays above the ink threshold are its four `#888888` corner pins (one cell each) and its three
-    // `#3a3a3a` baselines (46 cells each, 2026-11-19 review: the accent tints were too faint); the bezel
-    // `#2a2a2a`, the `#111111` body and the accent ticks are below it or not gray.
-    expect(countInk(data, THESIS_ZONE)).toBe((4 + 3 * SCOPE_COLS) * CELL * CELL);
-    expect(countPixel(data, THESIS_ZONE, SCOPE_BASELINE)).toBe(3 * SCOPE_COLS * CELL * CELL);
+    // its only gray above the ink threshold is its four `#888888` corner pins (one cell each); the
+    // bezel `#2a2a2a`, the `#111111` body, the accent-tinted baselines and the ticks are all below it or not gray.
+    expect(countInk(data, THESIS_ZONE)).toBe(4 * CELL * CELL);
     expect(countPixel(data, THESIS_ZONE, COLORS.muted)).toBe(4 * CELL * CELL);
     // and there is still no white text in it
     expect(countPixel(data, THESIS_ZONE, COLORS.white)).toBe(0);
@@ -705,14 +703,14 @@ describe('the four instruments', () => {
       for (const c of cells) expect(`${c.x},${c.y} ${hexAt(data, c.x, c.y)}`).toBe(`${c.x},${c.y} ${c.color}`);
     });
 
-    it('draws the three baselines in the neutral grey #3a3a3a, and a tick in the neuron\'s FULL accent, 2 cells tall', () => {
+    it('draws each baseline in its neuron\'s accent at 0.4 on the body, and a tick in the neuron\'s FULL accent, 2 cells tall', () => {
       const w = world(), render = renderer(), acc = scopeAccents(w), DX = SCOPE.x + 2, DY = SCOPE.y + 2;
-      expect(SCOPE_BASELINE).toBe('#3a3a3a');
+      expect(SCOPE_BASELINE_ALPHA).toBe(0.4);
       const d0 = dataOf(render(0));
       for (let s = 0; s < 3; s++) {
         for (const c of [0, 5, SCOPE_COLS - 1]) {
           const t0 = scopeCellsAt(firingsOf(w), acc, 0, T).some(k => k.x === DX + c && k.y === DY + 2 * s + 1);
-          if (!t0) expect(hexAt(d0, DX + c, DY + 2 * s + 1)).toBe('#3a3a3a');
+          if (!t0) expect(hexAt(d0, DX + c, DY + 2 * s + 1)).toBe(mixOnBg(acc[s], 0.4, '#111111'));
         }
         const f = w.tissue.firings.find(x => x.soma === s)!;
         const t = mod(f.t + 4, T), d = dataOf(render(t)), x = DX + SCOPE_COLS - 1 - 2;
@@ -801,9 +799,9 @@ describe('the four instruments', () => {
       expect(order[1]).toBeLessThan(order[2]);
     });
 
-    it('five levels from about 30 to 100 percent, each in an rgb444 bin of its own for every accent, and visible against the board', () => {
+    it('five levels from 42 to 100 percent, each in an rgb444 bin of its own for every accent, and visible against the board', () => {
       const q = (hex: string): string => { const n = parseInt(hex.slice(1), 16); return [n >> 20, (n >> 12) & 15, (n >> 4) & 15].join(','); };
-      expect(REP_ALPHAS[0]).toBeCloseTo(0.3, 5); expect(REP_ALPHAS[4]).toBe(1);
+      expect(REP_ALPHAS[0]).toBeCloseTo(0.42, 5); expect(REP_ALPHAS[4]).toBe(1);
       for (const a of Object.values(ACCENTS)) {
         const cols = REP_ALPHAS.map(al => mixOnBg(a, al));
         expect(new Set(cols.map(q)).size).toBe(5);
@@ -839,30 +837,71 @@ describe('the four instruments', () => {
         expect(slots.some(s => c.x === s.x + 1 && c.y > s.y && c.y < s.y + s.h - 1)).toBe(true);
     });
 
-    it('paints no RNA in drawStatic: the frame layer owns the whole stream, so a gap cell never keeps a frame-0 base', () => {
-      const w = world(), data = staticData(), bases = new Set<string>(Object.values(RNA_BASES(w)));
-      for (const c of rnaCellsAt(dimmSlots(w), RNA_BASES(w), 0)) expect(bases.has(hexAt(data, c.x, c.y))).toBe(false);
+    it('drawStatic paints the whole channel dark (no contact dots show through the gaps)', () => {
+      const w = world(), data = staticData();
+      const ch = rnaChannelCells(dimmSlots(w));
+      expect(ch.length).toBeGreaterThan(40);
+      for (const c of ch) expect(`${c.x},${c.y} ${hexAt(data, c.x, c.y)}`).toBe(`${c.x},${c.y} ${RNA_CHANNEL_DARK}`);
     });
 
-    it('no stale base cell from frame 0 survives where that cell is a gap at frame t', () => {
-      const w = world(), render = renderer(), slots = dimmSlots(w), base = RNA_BASES(w), stat = staticData();
-      const lit0 = rnaCellsAt(slots, base, 0);
+    it('in EVERY frame each channel cell is its base colour (lit) or the dark (gap), unless a flow, the answer spike or the soup covers it', () => {
+      const w = world(), render = renderer(), slots = dimmSlots(w), base = RNA_BASES(w), ch = rnaChannelCells(slots);
       let checked = 0;
-      for (const t of [2, 3, 6, 10, 37, 100, 143, 200, 287]) {
+      for (let t = 0; t < T; t++) {
         const d = dataOf(render(t)), covered = covering(w, t);
-        const litNow = new Set(rnaCellsAt(slots, base, t).map(c => `${c.x},${c.y}`));
-        for (const c of lit0) {
+        const lit = new Map(rnaCellsAt(slots, base, t).map(c => [`${c.x},${c.y}`, c.color]));
+        for (const c of ch) {
           const k = `${c.x},${c.y}`;
-          if (litNow.has(k) || covered.has(k)) continue;
-          // a slot that a wash is repainting (its top cell differs from the static board) is judged by that wash
-          const slot = slots.find(s => c.x === s.x + 1 && c.y > s.y && c.y < s.y + s.h - 1)!;
-          if (hexAt(d, slot.x, slot.y + 1) !== hexAt(stat, slot.x, slot.y + 1)) continue;
-          // an unwashed slot shows its own body in the gap: exactly what the static board holds (no RNA there)
-          expect(`t${t} ${k} ${hexAt(d, c.x, c.y)}`).toBe(`t${t} ${k} ${hexAt(stat, c.x, c.y)}`);
+          if (covered.has(k)) continue;
+          expect(`t${t} ${k} ${hexAt(d, c.x, c.y)}`).toBe(`t${t} ${k} ${lit.get(k) ?? RNA_CHANNEL_DARK}`);
           checked++;
         }
       }
+      expect(checked).toBeGreaterThan(40 * T * 0.9);
+    });
+
+    it('a takeover wash never tints the channel: in frames where a DIMM slot is under a takeover wash its gap cells are still dark', () => {
+      const w = world(), slots = dimmSlots(w), base = RNA_BASES(w), render = renderer();
+      const dimmNodes = [...w.takeovers.keys()].filter(n => w.graph.nodes[n].comp >= 0 && w.components[w.graph.nodes[n].comp].kind === 'dimmSlot');
+      const washedSlots = (t: number): { x: number; y: number; w: number; h: number }[] =>
+        dimmNodes.filter(n => washAt(w.takeovers.get(n), t, T)).map(n => w.components[w.graph.nodes[n].comp].body);
+      const frames = Array.from({ length: T }, (_, t) => t).filter(t => washedSlots(t).length > 0);
+      expect(frames.length, 'seed 20260724 washes a DIMM slot in some frame').toBeGreaterThan(0);
+      let checked = 0, tinted = 0;
+      for (const t of frames) {
+        const d = dataOf(render(t)), covered = covering(w, t);
+        const lit = new Set(rnaCellsAt(slots, base, t).map(c => `${c.x},${c.y}`));
+        for (const s of washedSlots(t)) {
+          for (const c of rnaChannelCells([s])) {
+            const k = `${c.x},${c.y}`;
+            if (lit.has(k) || covered.has(k)) continue;
+            expect(`t${t} ${k} ${hexAt(d, c.x, c.y)}`).toBe(`t${t} ${k} ${RNA_CHANNEL_DARK}`);
+            checked++;
+          }
+          // the wash was real: the slot's body outside the channel is not what the static board holds
+          for (let y = s.y; y < s.y + s.h; y++) if (hexAt(d, s.x, y) !== hexAt(staticData(), s.x, y)) tinted++;
+        }
+      }
       expect(checked).toBeGreaterThan(20);
+      expect(tinted).toBeGreaterThan(0);
+    });
+
+    it('an answer wash of the DIMM never tints the channel either: the gap cells stay dark', () => {
+      const w = world(), slots = dimmSlots(w), base = RNA_BASES(w);
+      const dimmIdx = w.components.findIndex(c => c.kind === 'dimmSlot');
+      const t = 100;
+      const answer = { recording: { frame: 0, finger: 0, accent: '#12ab34' }, path: [], component: dimmIdx, arriveFrame: t - 1 };
+      const d = dataOf(createRenderer({ ...w, answers: [answer] })(t));
+      const slot = w.components[dimmIdx].body, covered = covering({ ...w, answers: [] }, t);
+      const lit = new Set(rnaCellsAt(slots, base, t).map(c => `${c.x},${c.y}`));
+      let checked = 0;
+      for (const c of rnaChannelCells(slots)) {
+        const k = `${c.x},${c.y}`;
+        if (!inRect(slot, c.x, c.y) || lit.has(k) || covered.has(k)) continue;
+        expect(hexAt(d, c.x, c.y)).toBe(RNA_CHANNEL_DARK);
+        checked++;
+      }
+      expect(checked).toBeGreaterThan(4);
     });
 
     it('uses the fixed base colours (#39ff14 #ff2d78 #ffd23f #00e5ff) at full value in the frame, whatever the seed', () => {
@@ -985,11 +1024,11 @@ describe('the four instruments', () => {
     const w = world(), render = renderer();
     const acc = scopeAccents(w);
     const allowed = new Set<string>([
-      ...INSTRUMENT_COLOURS, ...acc,
+      ...INSTRUMENT_COLOURS, ...acc, ...acc.map(a => mixOnBg(a, 0.4, '#111111')), RNA_CHANNEL_DARK,
       ...[0, 1, 2].flatMap(i => [0, 1, 2, 3, 4].map(l => repColour(w, i, l))),
       ...Object.values(RNA_BASES(w)), ...STRIP_GREENS,
     ]);
-    expect(allowed.size).toBeLessThanOrEqual(12 + 3 + 15 + 4 + 5);
+    expect(allowed.size).toBeLessThanOrEqual(11 + 3 + 3 + 1 + 15 + 4 + 5);
     const regions = [
       ...scopeStaticCells(acc), ...stripStaticCells(w.activity.levels), ...w.idle.repressilator.flatMap(lightBlock),
     ];

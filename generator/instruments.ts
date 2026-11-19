@@ -15,6 +15,18 @@ import type { Rect } from './types.js';
 export interface InstrumentCell { x: number; y: number; color: string }
 
 const mod = (a: number, n: number): number => ((a % n) + n) % n;
+const hexOf = (r: number, g: number, b: number): string =>
+  `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, '0')}`;
+const rgb = (hex: string): [number, number, number] => {
+  const n = parseInt(hex.slice(1), 16);
+  return [n >> 16, (n >> 8) & 255, n & 255];
+};
+/** `hex` at alpha `a` over `bg` (the same arithmetic as render.mixOnBg, which this module does not import) */
+function mix(hex: string, a: number, bg: string): string {
+  const [r, g, b] = rgb(hex), [br, bgc, bb] = rgb(bg);
+  const m = (c: number, d: number): number => Math.round(c * a + d * (1 - a));
+  return hexOf(m(r, br), m(g, bgc), m(b, bb));
+}
 
 // ---------------------------------------------------------------- colours
 const BODY = '#111111', BEZEL = '#2a2a2a', PIN = '#888888';
@@ -23,18 +35,23 @@ const BODY = '#111111', BEZEL = '#2a2a2a', PIN = '#888888';
  * above the last, and apart from #0a0a0a (0,0,0) and #111111 (1,1,1). */
 export const STRIP_GREENS: readonly [string, string, string, string, string] =
   ['#0e1a0e', '#1d6a18', '#28a51a', '#31d417', '#39ff14'];
-/** The scope's three baselines: one neutral grey, a clear step above the bezel #2a2a2a. rgb444 (3,3,3), apart
- * from #111111 (1,1,1), the bezel (2,2,2) and the corner pins #888888 (8,8,8). */
-export const SCOPE_BASELINE = '#3a3a3a';
+/** The scope's baselines are each neuron's accent at this alpha on the chip body (#111111). For any three of the
+ * board's five accents the three tints fall in three rgb444 bins of their own, apart from the ticks (the full
+ * accents), the body, the bezel and the pins (asserted over every triple in instruments.test.ts). */
+export const SCOPE_BASELINE_ALPHA = 0.4;
 /** The RNA bases, the same for every seed, at full value: A neural green, U pink, G amber, C cyan. rgb444
  * (3,15,1) (15,2,7) (15,13,3) (0,14,15): four bins of their own, apart from the greys and the strip's
  * greens below level 4 (A IS STRIP_GREENS[4]). */
 export const RNA_BASE_COLOURS: Readonly<Record<'A' | 'U' | 'G' | 'C', string>> =
   { A: '#39ff14', U: '#ff2d78', G: '#ffd23f', C: '#00e5ff' };
-/** Every colour this module emits EXCEPT the caller-supplied accents (the scope's ticks and the repressilator's
- * lights are the caller's). 3 + 1 + 5 + 3 = 12 (the RNA's A is the strip's top green). */
+/** The RNA channel's resting colour: the board substrate, so the channel is always dark whatever the slot's
+ * body shows there (contact dots, a wash's tint). Not a new palette colour. */
+export const RNA_CHANNEL_DARK = '#0a0a0a';
+/** Every colour this module emits EXCEPT the caller-supplied accents (the scope's ticks and baselines and the
+ * repressilator's lights are the caller's). 3 + 5 + 3 = 11 (the RNA's A is the strip's top green; the channel's
+ * dark is the substrate). */
 export const INSTRUMENT_COLOURS: readonly string[] =
-  [BODY, BEZEL, PIN, SCOPE_BASELINE, ...STRIP_GREENS, RNA_BASE_COLOURS.U, RNA_BASE_COLOURS.G, RNA_BASE_COLOURS.C];
+  [BODY, BEZEL, PIN, ...STRIP_GREENS, RNA_BASE_COLOURS.U, RNA_BASE_COLOURS.G, RNA_BASE_COLOURS.C];
 
 // ---------------------------------------------------------------- 1. spike scope
 export const SCOPE: Rect = { x: 82, y: 66, w: 50, h: 11 };
@@ -45,9 +62,10 @@ const SCOPE_DOT_X = SCOPE.x + 2, SCOPE_DOT_Y = SCOPE.y + 2;
 /** neuron s keeps its baseline on dot row 2s + 1; a tick is that cell and the one above it */
 const baselineRow = (s: number): number => 2 * s + 1;
 
-/** The resting display: body, bezel, corner pins, padding, and the three baselines (one neutral grey, so the
- * accent-coloured ticks are the only colour on the scope). The accents argument is kept for the callers. */
-export function scopeStaticCells(_accents?: readonly [string, string, string]): InstrumentCell[] {
+/** The resting display: body, bezel, corner pins, padding, and the three baselines, each its neuron's accent
+ * blended toward the body at SCOPE_BASELINE_ALPHA (the ticks are the full accents). */
+export function scopeStaticCells(accents: readonly [string, string, string]): InstrumentCell[] {
+  const dim = accents.map(a => mix(a, SCOPE_BASELINE_ALPHA, BODY));
   const out: InstrumentCell[] = [];
   for (let j = 0; j < SCOPE.h; j++)
     for (let i = 0; i < SCOPE.w; i++) {
@@ -57,7 +75,7 @@ export function scopeStaticCells(_accents?: readonly [string, string, string]): 
       else if (edgeX || edgeY) color = BEZEL;
       else if (i >= 2 && i < 2 + SCOPE_COLS && j >= 2 && j < 2 + SCOPE_ROWS) {
         const row = j - 2;
-        for (let s = 0; s < 3; s++) if (row === baselineRow(s)) color = SCOPE_BASELINE;
+        for (let s = 0; s < 3; s++) if (row === baselineRow(s)) color = dim[s];
       }
       out.push({ x: SCOPE.x + i, y: SCOPE.y + j, color });
     }
@@ -171,9 +189,17 @@ export const RNA_FRAMES_PER_CELL = 2;
 export const RNA_FRAMES_PER_BASE = RNA_PITCH * RNA_FRAMES_PER_CELL;
 const RNA_SLOT_OFFSET = 9;
 
+/** The whole channel of every slot, lit or dark: the centre column, rows y + 1 .. y + h - 2. */
+export function rnaChannelCells(slots: readonly Rect[]): { x: number; y: number }[] {
+  return slots.flatMap(s => {
+    const x = s.x + Math.floor(s.w / 2);
+    return Array.from({ length: Math.max(0, s.h - 2) }, (_, i) => ({ x, y: s.y + 1 + i }));
+  });
+}
+
 /** The LIT cells of every slot, down the centre column, rows y + 1 .. y + h - 2, flowing downward. Row r of slot
  * k holds a base when (r - shift) is even, shift = floor(t / 2); the dark cells in between are not returned (the
- * renderer paints only what this returns, so the slot body shows through them). */
+ * renderer paints the whole channel dark (RNA_CHANNEL_DARK) and then these over it). */
 export function rnaCellsAt(
   slots: readonly Rect[], baseColours: Readonly<Record<'A' | 'U' | 'G' | 'C', string>>, t: number,
 ): InstrumentCell[] {

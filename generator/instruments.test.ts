@@ -4,8 +4,8 @@ import { mixOnBg } from './render.js';
 import type { Rect } from './types.js';
 import {
   INSTRUMENT_COLOURS, REPRESSILATOR_LEVELS, REPRESSILATOR_PERIOD, RNA_BASE_COLOURS, RNA_FRAMES_PER_BASE, RNA_SEQUENCE,
-  SCOPE, SCOPE_BASELINE, SCOPE_COLS, SCOPE_FRAMES_PER_COL, STRIP, STRIP_GREENS,
-  repressilatorLevelsAt, rnaCellsAt, scopeCellsAt, scopeStaticCells, stripCellsAt, stripStaticCells,
+  SCOPE, SCOPE_BASELINE_ALPHA, SCOPE_COLS, SCOPE_FRAMES_PER_COL, STRIP, STRIP_GREENS,
+  repressilatorLevelsAt, RNA_CHANNEL_DARK, rnaCellsAt, rnaChannelCells, scopeCellsAt, scopeStaticCells, stripCellsAt, stripStaticCells,
   type InstrumentCell,
 } from './instruments.js';
 
@@ -25,17 +25,22 @@ describe('colours', () => {
   it('is at most 18 entries, mutually distinct at 4 bits per channel, and holds every fixed colour', () => {
     expect(INSTRUMENT_COLOURS.length).toBeLessThanOrEqual(18);
     expect(new Set(INSTRUMENT_COLOURS.map(q4)).size).toBe(INSTRUMENT_COLOURS.length);
-    for (const c of ['#111111', '#2a2a2a', '#888888', '#3a3a3a', ...STRIP_GREENS, '#ff2d78', '#ffd23f', '#00e5ff'])
+    for (const c of ['#111111', '#2a2a2a', '#888888', ...STRIP_GREENS, '#ff2d78', '#ffd23f', '#00e5ff'])
       expect(INSTRUMENT_COLOURS).toContain(c);
-    expect(INSTRUMENT_COLOURS.length).toBe(12);
+    expect(INSTRUMENT_COLOURS.length).toBe(11);
   });
-  it('the grey baseline has an rgb444 bin of its own, apart from the board greys', () => {
-    expect(SCOPE_BASELINE).toBe('#3a3a3a');
-    expect(q4(SCOPE_BASELINE)).toBe('3,3,3');
-    for (const c of ['#0a0a0a', '#111111', '#2a2a2a', '#888888']) expect(q4(c)).not.toBe(q4(SCOPE_BASELINE));
+  it('the three baselines are their neuron\'s accent at 0.4 on the chip body, each in an rgb444 bin of its own, apart from the ticks and the body', () => {
+    expect(SCOPE_BASELINE_ALPHA).toBe(0.4);
+    const ACCENTS5 = ['#ff2d78', '#39ff14', '#bf5af2', '#00e5ff', '#ff6a00'];
+    for (let i = 0; i < 5; i++) for (let j = i + 1; j < 5; j++) for (let k = j + 1; k < 5; k++) {
+      const acc = [ACCENTS5[i], ACCENTS5[j], ACCENTS5[k]] as const;
+      const dim = acc.map(a => mixOnBg(a, 0.4, '#111111'));
+      const bins = [...dim, ...acc, '#111111', '#2a2a2a', '#888888'].map(q4);
+      expect(new Set(bins).size, acc.join(' ')).toBe(bins.length);
+    }
   });
   it('every fixed colour the cells emit is in the list (accent-derived ones aside)', () => {
-    const accentish = new Set<string>([...ACC]);
+    const accentish = new Set<string>([...ACC, ...ACC.map(a => mixOnBg(a, 0.4, '#111111'))]);
     const cells = [
       ...scopeStaticCells(ACC), ...stripStaticCells(Array(14).fill(1)),
       ...stripCellsAt([0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1], 0),
@@ -62,7 +67,7 @@ describe('spike scope', () => {
       expect(c.y).toBeGreaterThanOrEqual(SCOPE.y); expect(c.y).toBeLessThan(SCOPE.y + SCOPE.h);
     }
   });
-  it('has bezel, corner pins, body padding, and three neutral grey baselines (#3a3a3a)', () => {
+  it('has bezel, corner pins, body padding, and baselines in each neuron\'s accent at 0.4', () => {
     const at = (x: number, y: number): string => statics.find(c => c.x === x && c.y === y)!.color;
     const x1 = SCOPE.x + SCOPE.w - 1, y1 = SCOPE.y + SCOPE.h - 1;
     for (const [x, y] of [[SCOPE.x, SCOPE.y], [x1, SCOPE.y], [SCOPE.x, y1], [x1, y1]]) expect(at(x, y)).toBe('#888888');
@@ -71,7 +76,8 @@ describe('spike scope', () => {
     expect(at(SCOPE.x + 1, SCOPE.y + 5)).toBe('#111111');           // padding
     expect(at(SCOPE.x + 10, SCOPE.y + 1)).toBe('#111111');
     for (let s = 0; s < 3; s++) {
-      for (let c = 0; c < SCOPE_COLS; c++) expect(at(DX + c, DY + 2 * s + 1)).toBe('#3a3a3a');
+      const dim = mixOnBg(ACC[s], 0.4, '#111111');
+      for (let c = 0; c < SCOPE_COLS; c++) expect(at(DX + c, DY + 2 * s + 1)).toBe(dim);
       expect(at(DX + 7, DY + 2 * s)).toBe('#111111');               // the space above a baseline
     }
     for (let c = 0; c < SCOPE_COLS; c++) expect(at(DX + c, DY + 6)).toBe('#111111'); // row 6 empty
@@ -213,6 +219,17 @@ describe('RNA stream', () => {
   const colAt = (s: Rect, cs: InstrumentCell[]): Map<number, string> =>
     new Map(cs.filter(c => c.x === s.x + 1 && c.y >= s.y && c.y < s.y + s.h).map(c => [c.y, c.color]));
 
+  it('has a channel: the centre column, rows y + 1 .. y + h - 2 of each slot, and a dark colour for it', () => {
+    expect(RNA_CHANNEL_DARK).toBe('#0a0a0a');
+    const ch = rnaChannelCells(slots);
+    expect(ch.length).toBe(slots.reduce((n, s) => n + s.h - 2, 0));
+    expect(new Set(ch.map(key)).size).toBe(ch.length);
+    for (const c of rnaCellsAt(slots, colours, 77)) expect(ch.some(p => p.x === c.x && p.y === c.y)).toBe(true);
+    slots.forEach(s => {
+      const mine = ch.filter(c => c.x === s.x + 1);
+      expect(Math.min(...mine.filter(c => c.y >= s.y && c.y < s.y + s.h).map(c => c.y))).toBe(s.y + 1);
+    });
+  });
   it('draws only every second row of the channel (one lit cell, one dark), in the centre column', () => {
     for (const t of [0, 1, 2, 3, 50]) {
       const cs = rnaCellsAt(slots, colours, t);

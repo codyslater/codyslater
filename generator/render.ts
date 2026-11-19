@@ -11,7 +11,7 @@ import { answerSpikeAt, answerWashAt, wakeCellsAt } from './boardlife.js';
 import { fanStepAt, idleCellsAt, plateCellsAt, plateStaticCells, repressilatorLightCells } from './idle.js';
 import { tissueCellsAt } from './tissue.js';
 import {
-  RNA_BASE_COLOURS, repressilatorLevelsAt, rnaCellsAt, scopeCellsAt, scopeStaticCells, stripCellsAt, stripStaticCells,
+  RNA_BASE_COLOURS, RNA_CHANNEL_DARK, repressilatorLevelsAt, rnaCellsAt, rnaChannelCells, scopeCellsAt, scopeStaticCells, stripCellsAt, stripStaticCells,
 } from './instruments.js';
 import type { BoardComponent, DressingFeature, Rect, SoupState, World } from './types.js';
 
@@ -102,15 +102,15 @@ const mod = (a: number, n: number): number => ((a % n) + n) % n;
 // The four instruments (owner, 2026-11-19): data in `instruments.ts`, colours chosen here, once per world.
 // ---------------------------------------------------------------------------
 
-/** the repressilator lights' five levels: 30, 47.5, 65, 82.5, 100 percent of the accent, on the board. Each
+/** the repressilator lights' five levels: 42, 56.5, 71, 85.5, 100 percent of the accent, on the board. Each
  * level lands in its own rgb444 bin for every accent (asserted in render.test.ts), and the resting level is
  * already a clear light. */
-const REPRESSILATOR_ALPHAS: readonly number[] = [0.3, 0.475, 0.65, 0.825, 1.0];
+const REPRESSILATOR_ALPHAS: readonly number[] = [0.42, 0.565, 0.71, 0.855, 1.0];
 
 export interface InstrumentPalette {
   /** the three somas' accents in soma order: the scope's tick colours */
   scope: [string, string, string];
-  /** lights A, B, C by level 0..4: the three non-green accents, in the world's order, at 30..100 percent */
+  /** lights A, B, C by level 0..4: the three non-green accents, in the world's order, at 42..100 percent */
   repressilator: string[][];
   /** the RNA bases: fixed colours at full value, the same for every world */
   rna: Record<'A' | 'U' | 'G' | 'C', string>;
@@ -309,10 +309,11 @@ export function drawStatic(world: World): Canvas {
   for (const c of plateStaticCells()) cell(ctx, c.x, c.y, c.color);
 
   // The four instruments at rest (owner, 2026-11-19), so the first frame is complete: the scope module in
-  // THESIS_ZONE, the repressilator lights at their frame-0 levels, and the strip. The RNA stream is NOT here: its
-  // bases leave gaps, so a base painted for frame 0 would survive in a cell that is dark at frame t. The frame
-  // layer paints every lit cell and the slot body shows through the rest.
+  // THESIS_ZONE, the repressilator lights at their frame-0 levels, and the strip. The RNA channel (the centre
+  // column of each DIMM slot) rests DARK here, so the slot's contact dots never show through a gap; no base is
+  // painted: a base painted for frame 0 would survive in a cell that is dark at frame t.
   const pal = instrumentPalette(world);
+  for (const c of rnaChannelCells(dimmSlotBodies(world))) cell(ctx, c.x, c.y, RNA_CHANNEL_DARK);
   for (const c of scopeStaticCells(pal.scope)) cell(ctx, c.x, c.y, c.color);
   for (const c of repressilatorStaticCells(world, pal)) cell(ctx, c.x, c.y, c.color);
   for (const c of stripStaticCells(world.activity.levels)) cell(ctx, c.x, c.y, c.color);
@@ -506,6 +507,7 @@ export function createRenderer(world: World): (t: number) => Canvas {
   const fan = world.components.find(c => c.kind === 'fan');
   const pal = instrumentPalette(world);
   const slots = dimmSlotBodies(world);
+  const channel = rnaChannelCells(slots);
   const firings = world.tissue.firings.map(f => ({ soma: f.soma, t: f.t }));
   const canvas = createCanvas(WIDTH, HEIGHT);
   const ctx = canvas.getContext('2d');
@@ -567,9 +569,10 @@ export function createRenderer(world: World): (t: number) => Canvas {
     for (const a of answerWashAt(world.answers, t, world.T))
       washComponent(ctx, baseData, world.components[a.component], a.accent, a.k, PALETTE.washCeil);
 
-    // The RNA stream's lit cells, over every wash of their DIMM (the takeover wash and the answer's), under the
-    // flows (a flow crossing the slot still covers a base). Its dark cells are not painted at all: they show the
-    // slot body, washed or not, so no base from another frame can linger in a gap.
+    // The RNA channel, over every wash of its DIMM (the takeover wash and the answer's), under the flows (a flow
+    // crossing the slot still covers it): the WHOLE channel every frame, gap cells dark and lit cells in their
+    // base colour, so a wash never tints it and no base from another frame can linger in a gap.
+    for (const c of channel) cell(ctx, c.x, c.y, RNA_CHANNEL_DARK);
     for (const c of rnaCellsAt(slots, pal.rna, t)) cell(ctx, c.x, c.y, c.color);
 
     drawFlows(ctx, world, t);
