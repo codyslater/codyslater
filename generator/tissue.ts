@@ -591,7 +591,10 @@ function compose(
     for (const n of an.neurites) {
       if (!n.ext) continue;
       const P = n.period!, L = n.ext.length;
-      const k = Math.round(L * (0.5 - 0.5 * Math.cos(2 * Math.PI * mod(t + phases.get(n.id)!, P) / P)));
+      // The + 1e-9 settles exact halves upward. For L = 5 and 6 the length passes within one ulp of
+      // k + 0.5 (e.g. cos(pi/3)), so without it the cell count would hang on the last bit of
+      // Math.cos, and with it the reference render's byte identity does not.
+      const k = Math.round(L * (0.5 - 0.5 * Math.cos(2 * Math.PI * mod(t + phases.get(n.id)!, P) / P)) + 1e-9);
       for (let i = 0; i < k; i++) put(n.ext[i].x, n.ext[i].y, DENDRITE_COLOUR, Z.ext);
       for (const c of coneCells(n.path.concat(n.ext.slice(0, k)), Math.floor(t / 3) % 2 === 1)) put(c.x, c.y, CONE_COLOUR, Z.cone);
     }

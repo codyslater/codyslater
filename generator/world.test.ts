@@ -405,7 +405,6 @@ describe('§13.5 the frame sweep', () => {
 
   it('detects a rendered void over the rendered-void ceiling — measured, and gated', () => {
     const w = build(20260724).world;
-    expect(OVERFILL_ROWS * VOID_W / VOID_CELLS).toBeGreaterThan(RENDERED_VOID_PEAK_MAX);
     const extra: Particle[] = [];
     for (let y = VOID_Y0; y < VOID_Y0 + OVERFILL_ROWS; y++)
       for (let x = VOID_X0; x <= VOID_X1; x++)

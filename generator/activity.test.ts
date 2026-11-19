@@ -115,7 +115,8 @@ describe('buildWorld(seed, T, activity)', () => {
     // GOLDEN_UNPACED was computed on the commit BEFORE activity existed and has never moved: the
     // default fortnight changes nothing the pace does not read. GOLDEN_PACED (tissue + idle, with
     // `beatPeriod` left out) started the same way and was re-pinned once, on purpose, when the idle
-    // layer itself changed (2026-11-19: five LEDs, and the repressilator's three 2x2 lights).
+    // layer itself changed (2026-11-19: five LEDs, and the repressilator's three 2x2 lights), and
+    // once more the same day when the breathing tips' length got its deterministic rounding nudge.
     const got = sha(paced(baseWorld()));
     expect(got).toBe(GOLDEN_PACED);
     expect(sha(unpaced(baseWorld()))).toBe(GOLDEN_UNPACED);
@@ -154,5 +155,5 @@ describe('buildWorld(seed, T, activity)', () => {
   });
 });
 
-const GOLDEN_PACED = '26cb15de20a9c9422a3036cb5df4e7b2443dca22c95d9b19db794ef7e7aa73f8';
+const GOLDEN_PACED = '9881e12ebdef9a74844162b459b6783e16079f436c96fa9ed0301e1d77d44ec7';
 const GOLDEN_UNPACED = 'cf1e8c2e5e895768b41e5fdc0bde8b66fd6d5d0741df1e6c978858e78b79cee6';
