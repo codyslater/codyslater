@@ -10,7 +10,7 @@
 // Geometry is FROZEN: it takes hand-tuning to look clean, and the daily job renders arbitrary
 // seeds, so the anatomy comes from a fixed internal constant and never from `seed`. The seed varies
 // only which accents the somas wear, the spontaneous firings, and the breathing-tip phases.
-import { ACCENTS, FINGERS, GRID_W, VOID_BG } from './layout.js';
+import { ACCENTS, FINGERS, GOLD, GRID_W, VOID_BG } from './layout.js';
 import { mulberry32, type Rng } from './rng.js';
 import type { Cell, EscapeEvent } from './types.js';
 
@@ -45,6 +45,9 @@ export interface Tissue {
   refractory: number[];
   /** the loop closes on itself (the simulated period repeats exactly) */
   steady: boolean;
+  /** The busiest frame's dynamic cell count BEFORE the last-resort cap. A value
+   * over BUDGET means cells were shed from that frame: a visible defect. */
+  peak: number;
   staticCells: TissueCell[];
   /** the dynamic overlay for every frame of the loop, precomputed (frozen) */
   frames: readonly (readonly TissueCell[])[];
@@ -61,7 +64,7 @@ const SOMA_POS: [number, number][] = [[254, 14], [260, 34], [254, 58]];
 const SPEED = 1.5;                                   // cells per frame
 const REFRACT = [18, 18, 48];                        // soma 3 is the recording neuron: it adapts, so
                                                      // recordings are always >= 48 frames apart
-const BUDGET = 110;                                  // moving void cells per frame (production gate)
+export const BUDGET = 210;                           // dynamic cells per frame; sized so NO tested seed ever sheds (see `peak`)
 const TIP_PLAN = [2, 2, 1];                          // breathing tips per soma
 const TIP_PERIODS = [72, 96, 144, 288, 48];          // all divide 288
 const RING_R = [5, 7, 9];
@@ -85,9 +88,17 @@ const SOMA_ACCENTS = [ACCENTS.ai, ACCENTS.synbio, ACCENTS.rna, ACCENTS.om];
 const TIER_ALPHA = [0.4, 0.68, 1];
 const tiers = (accent: string): [string, string, string] =>
   [tint(accent, TIER_ALPHA[0]), tint(accent, TIER_ALPHA[1]), tint(accent, TIER_ALPHA[2])];
+/** The electrode leads (board finger -> soma) are not part of any cell: one neutral dim gold, the
+ * connector gold toward the void. Only axons wear a cell's tint. */
+export const LEAD_COLOUR = tint(GOLD, 0.6);
+/** A spike's trail on a lead, head-side first. It is meant to run bright gold (#d4b83a) down to
+ * LEAD_COLOUR, but the 16-colour GIF cap leaves room for one gold only (15 + LEAD_COLOUR), so all
+ * three steps collapse onto it (a trail equal to rest is not an overlay: a lead spike shows its
+ * white head and flank). Widen this ramp when a slot frees up. */
+export const LEAD_RAMP: readonly string[] = [LEAD_COLOUR, LEAD_COLOUR, LEAD_COLOUR];
 /** EVERY colour this module can emit. */
 export const TISSUE_COLOURS: readonly string[] =
-  [WHITE, DENDRITE_COLOUR, CONE_COLOUR, ...SOMA_ACCENTS.flatMap(tiers)];
+  [WHITE, DENDRITE_COLOUR, CONE_COLOUR, ...SOMA_ACCENTS.flatMap(tiers), LEAD_COLOUR];
 
 // ---------------------------------------------------------------- grid helpers
 const key = (x: number, y: number): number => y * GRID_W + x;
@@ -530,6 +541,23 @@ function compose(
   an: Anatomy, somas: Soma[], sim: Sim, phases: Map<number, number>, rest: Map<number, string>, T: number,
 ): { frames: TissueCell[][]; peak: number } {
   const col = somas.map(s => tiers(s.accent));
+  // flank cells: per neurite one fixed side of the path, chosen once, perpendicular to travel; a
+  // flank on a static cell, a soma or a breathing-tip cell is simply skipped (the side never swaps)
+  const blocked = new Set<number>([...rest.keys()]);
+  for (const n of an.neurites) for (const c of n.ext ?? []) blocked.add(key(c.x, c.y));
+  const flank = new Map<number, (Cell | null)[]>();
+  for (const n of an.neurites) {
+    if (n.kind === 'dendrite') continue;
+    const p = n.path;
+    const side = (sg: number): (Cell | null)[] => p.map((c, i) => {
+      const a = p[Math.min(i + 1, p.length - 1)], b = p[Math.max(i - 1, 0)];
+      const dx = Math.sign(a.x - b.x), dy = Math.sign(a.y - b.y);
+      const f = { x: c.x + sg * -dy, y: c.y + sg * dx };
+      return inBounds(f) && !blocked.has(key(f.x, f.y)) ? f : null;
+    });
+    const l = side(1), r = side(-1);
+    flank.set(n.id, l.filter(Boolean).length >= r.filter(Boolean).length ? l : r);
+  }
   const neurite = new Map(an.neurites.map(n => [n.id, n]));
   const frames: TissueCell[][] = [];
   let peak = 0;
@@ -566,21 +594,25 @@ function compose(
     }
     // flashes: bouton (white 2, accent 2), input contact (white 2, accent 2), recording contact (white 3, accent 3)
     for (const f of sim.flashes) {
-      const age = mod(t - f.t0, T), n = neurite.get(f.neurite)!, lit = col[n.owner][2];
+      const age = mod(t - f.t0, T), n = neurite.get(f.neurite)!, lit = n.kind === 'input' ? LEAD_COLOUR : col[n.owner][2];
       const cells = f.kind === 'bouton' ? n.bouton! : n.contact!;
       const white = f.kind === 'rec' ? 3 : 2, total = white * 2;
       if (age < total) for (const c of cells) put(c.x, c.y, age < white ? WHITE : lit, Z.flash, f.kind !== 'bouton');
     }
-    // spikes: a 4-cell white head and an 8-cell trail stepping down the owner's accent
+    // spikes: a 4-cell white head (2 wide: one flank cell each) and an 8-cell trail stepping down the owner's accent
     for (const sp of sim.spikes) {
       const n = neurite.get(sp.neurite)!, age = mod(t - sp.t0, T), len = n.path.length;
       if (age >= spikeDur(len)) continue;
       const h = Math.floor(age * SPEED), c3 = col[n.owner];
-      const ramp = [c3[2], c3[2], c3[2], c3[1], c3[1], c3[1], c3[0], c3[0]];
+      const ramp = n.kind === 'input'
+        ? [LEAD_RAMP[0], LEAD_RAMP[0], LEAD_RAMP[1], LEAD_RAMP[1], LEAD_RAMP[1], LEAD_RAMP[2], LEAD_RAMP[2], LEAD_RAMP[2]]
+        : [c3[2], c3[2], c3[2], c3[1], c3[1], c3[1], c3[0], c3[0]];
       for (let j = 0; j < 12; j++) {
         const idx = h - j;
         if (idx < 0 || idx >= len) continue;
         put(n.path[idx].x, n.path[idx].y, j < 4 ? WHITE : ramp[j - 4], j < 4 ? Z.head : Z.trail);
+        const fl = j < 4 ? flank.get(n.id)![idx] : null;
+        if (fl) put(fl.x, fl.y, WHITE, Z.head);
       }
     }
     // only what differs from rest
@@ -614,6 +646,7 @@ export function buildTissue(seed: number, events: readonly EscapeEvent[], accent
   const put = (c: Cell, color: string): void => { const k = key(c.x, c.y); if (!rest.has(k)) order.push(k); rest.set(k, color); };
   for (const n of an.neurites) {
     if (n.kind === 'dendrite') { n.cells.forEach(c => put(c, DENDRITE_COLOUR)); continue; }
+    if (n.kind === 'input') { n.path.forEach(c => put(c, LEAD_COLOUR)); n.contact?.forEach(c => put(c, LEAD_COLOUR)); continue; }
     n.path.forEach(c => put(c, col[n.owner][0]));
     n.bouton?.forEach(c => put(c, col[n.owner][1]));
     n.contact?.forEach(c => put(c, col[n.owner][1]));
@@ -638,7 +671,7 @@ export function buildTissue(seed: number, events: readonly EscapeEvent[], accent
     firings: [...sim.firings].sort((a, b) => a.t - b.t || a.soma - b.soma),
     spontaneous: spont,
     recordings: sim.recordings.map(r => ({ frame: r.frame, finger: r.finger, accent: somas[r.soma].accent })).sort((a, b) => a.frame - b.frame),
-    refractory: [...REFRACT], steady: sim.steady, staticCells, frames: Object.freeze(frames.map(f => Object.freeze(f))),
+    refractory: [...REFRACT], steady: sim.steady, peak: best, staticCells, frames: Object.freeze(frames.map(f => Object.freeze(f))),
   };
 }
 
