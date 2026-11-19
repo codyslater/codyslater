@@ -152,6 +152,53 @@ describe('inter-frame differencing', () => {
   });
 });
 
+describe('one source colour, one encoded colour', () => {
+  it('one source colour, one encoded colour, for the whole loop', () => {
+    // The mapping from a rendered colour to an encoded colour must depend on
+    // that colour and the palette only: not on raster order, not on the frame.
+    // Walk every 4 px cell centre of every 4th frame.
+    const frames = pinnedFrames();
+    const decoded = decodeGif(pinnedGif());
+    const q = quantizeFrames(frames, WIDTH, HEIGHT);
+    const seen = new Map<number, number>();   // source rgb -> decoded rgb
+    const conflicts: string[] = [];
+    let conflictCount = 0;
+    const hex = (v: number): string => `#${v.toString(16).padStart(6, '0')}`;
+    for (let f = 0; f < frames.length; f += 4) {
+      const src = frames[f];
+      const canvas = decoded.canvases[f];
+      for (let cy = 0; cy < HEIGHT / 4; cy++) for (let cx = 0; cx < WIDTH / 4; cx++) {
+        const i = (cy * 4 + 2) * WIDTH + cx * 4 + 2;
+        const key = (src[i * 4] << 16) | (src[i * 4 + 1] << 8) | src[i * 4 + 2];
+        const d = decoded.palette[canvas[i]];
+        const got = (d[0] << 16) | (d[1] << 8) | d[2];
+        const prev = seen.get(key);
+        if (prev === undefined) seen.set(key, got);
+        else if (prev !== got) {
+          conflictCount++;
+          if (conflicts.length < 5)
+            conflicts.push(`${hex(key)} -> ${hex(prev)} and ${hex(got)} (frame ${f}, cell ${cx},${cy})`);
+        }
+      }
+    }
+    console.log(`${seen.size} distinct source colours seen at cell centres`);
+    expect(conflicts, `${conflictCount} source colour/cell pairs mapped to a second colour`).toEqual([]);
+
+    // And the one colour it maps to is the nearest palette entry (lowest index
+    // on a tie), so "first pixel in the bin wins" cannot come back unseen.
+    for (const [key, got] of seen) {
+      const r = key >> 16, g = (key >> 8) & 255, b = key & 255;
+      let best = -1, bestD = Infinity;
+      q.palette.forEach((p, j) => {
+        const dist = (p[0] - r) ** 2 + (p[1] - g) ** 2 + (p[2] - b) ** 2;
+        if (dist < bestD) { bestD = dist; best = j; }
+      });
+      const p = q.palette[best];
+      expect(hex(got), `source ${hex(key)}`).toBe(hex((p[0] << 16) | (p[1] << 8) | p[2]));
+    }
+  });
+});
+
 describe('§5 / §9.1 the committed reference render', () => {
   // §5: "Same seed + same options => byte-identical GIF." The reference asset in
   // the spec's `assets/` directory is what §13 is written against, so this is the

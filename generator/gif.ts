@@ -7,7 +7,7 @@ import type * as GifEnc from 'gifenc';
 // to `undefined` under plain Node/tsx execution (vitest's own transform masks this).
 // Load via createRequire instead, which sees the real CJS exports object.
 const require = createRequire(import.meta.url);
-const { GIFEncoder, applyPalette, quantize }: typeof GifEnc = require('gifenc');
+const { GIFEncoder, nearestColorIndex, quantize }: typeof GifEnc = require('gifenc');
 
 /** The encoded colour table: 63 picture colours plus the transparent index
  * that marks "unchanged since the last frame" (§3's 64-entry ceiling). */
@@ -20,6 +20,35 @@ export interface Quantized {
   indexed: Uint8Array[];
 }
 
+/** Map every pixel of every frame onto `palette` through ONE cache that lives
+ * for the whole encode, keyed by the exact 24-bit colour. A colour's index is
+ * therefore a function of that colour and the palette only: the nearest entry
+ * by true distance, lowest index on a tie. gifenc's own `applyPalette` keys its
+ * per-call cache by a 12-bit bin, so the first pixel of a bin in raster order
+ * decided the index for every colour in it, and that changed frame to frame
+ * (a static colour flickered between two palette entries). */
+export function mapToPalette(frames: Uint8ClampedArray[], palette: number[][]): Uint8Array[] {
+  const cache = new Map<number, number>();
+  return frames.map(frame => {
+    const index = new Uint8Array(frame.length / 4);
+    let lastKey = -1, lastIdx = 0;
+    for (let i = 0, p = 0; i < index.length; i++, p += 4) {
+      const key = (frame[p] << 16) | (frame[p + 1] << 8) | frame[p + 2];
+      if (key !== lastKey) {
+        let idx = cache.get(key);
+        if (idx === undefined) {
+          idx = nearestColorIndex(palette, [frame[p], frame[p + 1], frame[p + 2]]);
+          cache.set(key, idx);
+        }
+        lastKey = key;
+        lastIdx = idx;
+      }
+      index[i] = lastIdx;
+    }
+    return index;
+  });
+}
+
 /** One global palette from up to 4 spread frames, then every frame mapped onto
  * it with no dithering. Exported so a test can compare the played-back file
  * against exactly what the encoder was asked to show. */
@@ -29,7 +58,7 @@ export function quantizeFrames(frames: Uint8ClampedArray[], width: number, heigh
   const sample = new Uint8Array(width * height * 4 * idxs.length);
   idxs.forEach((fi, i) => sample.set(frames[fi], i * width * height * 4));
   const palette = quantize(sample, PICTURE_COLOURS, { format: 'rgb444' });
-  return { palette, indexed: frames.map(frame => applyPalette(frame, palette, 'rgb444')) };
+  return { palette, indexed: mapToPalette(frames, palette) };
 }
 
 /** What a frame stores: its pixel where the picture changed since `prev`, the
