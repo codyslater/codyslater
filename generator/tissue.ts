@@ -510,10 +510,13 @@ function simulate(an: Anatomy, events: readonly EscapeEvent[], spont: readonly n
   return { spikes: a.spikes, firings: a.firings, flashes: a.flashes, recordings: a.recordings, steady: sig(a) === sig(b) };
 }
 
-/** Rhythm: 3 to 5 recordings per loop. Inputs on soma 1's finger plus two seeded spontaneous firings of
- * soma 1 start full cascades; if a seed's events give fewer, more spontaneous firings are drawn
- * until it does (deterministically, from the same stream). */
-function planRhythm(an: Anatomy, events: readonly EscapeEvent[], rng: Rng, T: number): { spont: number[]; sim: Sim } {
+/** Rhythm: 3 to 5 recordings per loop. Inputs on soma 1's finger plus `want` seeded spontaneous firings of
+ * soma 1 (the activity's pace: 1, 2 or 3) start full cascades; `want` is a TARGET, never a license to
+ * break the rule: a firing that would push the loop past 5 recordings, or that does not close the loop,
+ * is not taken, and if a seed's events give fewer than 3 recordings more firings are drawn past `want`
+ * until it does (deterministically, from the same stream). The draws are the same for any `want` up to
+ * the point the loop stops asking, so `want = 2` is the original behaviour exactly. */
+function planRhythm(an: Anatomy, events: readonly EscapeEvent[], rng: Rng, T: number, want: number): { spont: number[]; sim: Sim } {
   const skip = new Set<number>();
   let spont: number[] = [];
   let sim = simulate(an, events, spont, skip, T);
@@ -524,7 +527,7 @@ function planRhythm(an: Anatomy, events: readonly EscapeEvent[], rng: Rng, T: nu
   for (const x of inputs) { if (sim.recordings.length <= 5) break; skip.add(x.i); sim = simulate(an, events, spont, skip, T); }
   const into0 = events.filter((e, i) => e.finger === INPUT_FINGERS[0] && !skip.has(i)).length;
   const fires0 = (s: Sim): number => s.firings.filter(f => f.soma === 0).length;
-  for (let tries = 0; (spont.length < 2 || sim.recordings.length < 3) && spont.length < 5 && tries < 160; tries++) {
+  for (let tries = 0; (spont.length < want || sim.recordings.length < 3) && spont.length < 5 && tries < 160; tries++) {
     const f = tries < 100 ? Math.floor(rng() * T) : ((tries - 100) * 7) % T;       // then a deterministic scan
     const r = simulate(an, events, [...spont, f], skip, T);
     const strict = tries < 70;                                                     // later: settle for a partial cascade
@@ -628,7 +631,14 @@ function compose(
 }
 
 // ---------------------------------------------------------------- public API
-export function buildTissue(seed: number, events: readonly EscapeEvent[], accents: readonly string[], T: number): Tissue {
+/** `spontaneousFirings` is how many times soma 1 is asked to fire on its own per loop (1, 2 or 3; the
+ * activity's calm, steady and busy pace). Steady, the default, is the banner as it was before activity. */
+export function buildTissue(
+  seed: number, events: readonly EscapeEvent[], accents: readonly string[], T: number, spontaneousFirings = 2,
+): Tissue {
+  if (![1, 2, 3].includes(spontaneousFirings)) {
+    throw new Error(`tissue: spontaneousFirings must be 1, 2 or 3, got ${JSON.stringify(spontaneousFirings)}`);
+  }
   const an = anatomy();
   const rng = mulberry32((seed ^ 0x7155) >>> 0);
 
@@ -639,7 +649,7 @@ export function buildTissue(seed: number, events: readonly EscapeEvent[], accent
   const somas: Soma[] = an.somas.map((s, i) => ({ ...s, accent: worn[i] }));
   const col = somas.map(s => tiers(s.accent));
 
-  const { spont, sim } = planRhythm(an, events, rng, T);
+  const { spont, sim } = planRhythm(an, events, rng, T, spontaneousFirings);
 
   // resting arbor
   const rest = new Map<number, string>(), order: number[] = [];

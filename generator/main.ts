@@ -1,5 +1,6 @@
 import { createCanvas } from '@napi-rs/canvas';
 import fs from 'node:fs';
+import { DEFAULT_ACTIVITY, paceOf, parseActivity, type Activity } from './activity.js';
 import { encodeGif } from './gif.js';
 import { HEIGHT, WIDTH } from './layout.js';
 import { createRenderer, readFrame } from './render.js';
@@ -8,7 +9,7 @@ import {
 } from './timeline.js';
 
 const USAGE = 'usage: npm run render -- [--seed YYYYMMDD] [--fps N] [--seconds N] '
-  + '[--out FILE.gif] [--contact-sheet FILE.png]';
+  + '[--out FILE.gif] [--contact-sheet FILE.png] [--activity l1,...,l14]';
 
 function die(msg: string): never {
   console.error(`render: ${msg}`);
@@ -44,11 +45,17 @@ const fps = intArg('fps', DEFAULT_FPS);
 const seconds = intArg('seconds', DEFAULT_SECONDS);
 const out = arg('out', DEFAULT_OUT)!;
 const sheet = arg('contact-sheet');
+// The last 14 days of contribution LEVELS (0-4, oldest first); absent is the neutral steady week.
+let activity: Activity = DEFAULT_ACTIVITY;
+const activityText = arg('activity');
+if (activityText !== undefined) {
+  try { activity = parseActivity(activityText); } catch (e) { die(`${(e as Error).message} (from --activity ${JSON.stringify(activityText)})`); }
+}
 
 const T = fps * seconds;
 const t0 = Date.now();
-const world = buildWorld(seed, T);
-console.log(`world: ladder rung ${world.soup.rung} at candidate ${world.soup.candidate} `
+const world = buildWorld(seed, T, activity);
+console.log(`world: ${paceOf(activity)} pace, ladder rung ${world.soup.rung} at candidate ${world.soup.candidate} `
   + `(${world.soup.sims} simulation${world.soup.sims === 1 ? '' : 's'}), body peak ${world.soup.peak} cells, `
   + `${world.flows.length} flows, ${world.events.length} escapes, ${world.takeovers.size} responsive nodes `
   + `— ${((Date.now() - t0) / 1000).toFixed(1)} s`);

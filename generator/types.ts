@@ -1,3 +1,4 @@
+import type { Activity } from './activity.js';
 import type { Answer, Wake } from './boardlife.js';
 import type { Idle } from './idle.js';
 import type { Tissue } from './tissue.js';
@@ -204,4 +205,6 @@ export interface World {
   answers: Answer[];
   /** the board's idle life: sprouts at the connector, LEDs, the heartbeat, bus bars (built after the tissue) */
   idle: Idle;
+  /** the owner's last 14 contribution levels: it sets the tissue's and the heartbeat's pace, nothing else */
+  activity: Activity;
 }

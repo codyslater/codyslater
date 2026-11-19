@@ -538,3 +538,52 @@ describe('tissue: electrode leads and spike width', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// The pace: how many times soma 1 is asked to fire on its own (calm 1, steady 2, busy 3).
+// ---------------------------------------------------------------------------
+describe('tissue: the requested spontaneous firings', () => {
+  const byPace = new Map<string, Tissue>();
+  const paced = (seed: number, n: number): Tissue => {
+    const k = `${seed}/${n}`;
+    if (!byPace.has(k)) { const w = worldOf(seed); byPace.set(k, buildTissue(seed, w.events, w.accents, T, n)); }
+    return byPace.get(k)!;
+  };
+
+  const cases = SEEDS.flatMap(seed => [1, 2, 3].map(n => [seed, n] as const));
+  it.each(cases)('seed %i, %i spontaneous: 3-5 recordings, 48+ apart, never shedding, periodic', (seed, n) => {
+    const t = paced(seed, n);
+    expect(t.recordings.length).toBeGreaterThanOrEqual(3);
+    expect(t.recordings.length).toBeLessThanOrEqual(5);
+    const frames = t.recordings.map(r => r.frame).sort((a, b) => a - b);
+    frames.forEach((f, i) => expect(mod(frames[(i + 1) % frames.length] - f, T)).toBeGreaterThanOrEqual(48));
+    expect(t.peak).toBeLessThanOrEqual(BUDGET);
+    expect(t.steady).toBe(true);
+    for (const f of [0, 40, 143, 287]) expect(tissueCellsAt(t, f + T)).toEqual(tissueCellsAt(t, f));
+    // every spontaneous firing is a firing of soma 1 at the time it names
+    for (const s of t.spontaneous) expect(t.firings.some(q => q.soma === 0 && q.t === s)).toBe(true);
+  });
+
+  it('a calm week asks for one spontaneous firing and a busy week for no fewer than calm', () => {
+    for (const seed of SEEDS) {
+      expect(paced(seed, 1).spontaneous.length, `seed ${seed} calm`).toBeGreaterThanOrEqual(1);
+      expect(paced(seed, 3).spontaneous.length, `seed ${seed} busy >= calm`)
+        .toBeGreaterThanOrEqual(paced(seed, 1).spontaneous.length);
+    }
+  });
+
+  it('busy gives at least as many recordings as calm for every seed, and more for at least one', () => {
+    const calm = SEEDS.map(s => paced(s, 1).recordings.length);
+    const busy = SEEDS.map(s => paced(s, 3).recordings.length);
+    busy.forEach((b, i) => expect(b, `seed ${SEEDS[i]}: busy ${b} vs calm ${calm[i]}`).toBeGreaterThanOrEqual(calm[i]));
+    expect(busy.some((b, i) => b > calm[i]), `busy ${busy} calm ${calm}`).toBe(true);
+  });
+
+  it('the default argument equals an explicit 2', () => {
+    for (const seed of SEEDS) {
+      const w = worldOf(seed);
+      expect(paced(seed, 2)).toEqual(buildTissue(seed, w.events, w.accents, T));
+      expect(paced(seed, 2)).toEqual(tissueOf(seed));
+    }
+  });
+});

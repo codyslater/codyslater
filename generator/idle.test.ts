@@ -507,3 +507,53 @@ describe('the name plate', () => {
     for (const c of emitted) expect(PLATE_COLOURS).toContain(c);
   });
 });
+
+describe('the heartbeat period (calm 36, steady 24, busy 18)', () => {
+  const w = (): World => worldOf(SEEDS[0]);
+  /** the heart block's brightest step at each of frames 0..n-1 */
+  const heartLevels = (idle: Idle, n: number): number[] => {
+    const h = idle.heart;
+    return Array.from({ length: n }, (_, t) => {
+      let lv = 0;
+      for (const c of idleCellsAt(idle, t, T)) {
+        if (c.x < h.x || c.x >= h.x + h.w || c.y < h.y || c.y >= h.y + h.h) continue;
+        lv = Math.max(lv, HEART_RAMP.indexOf(c.color) + 1);
+      }
+      return lv;
+    });
+  };
+
+  it.each([36, 24, 18])('period %i: exactly two peaks per period, all three steps, repeating', period => {
+    const world = w();
+    const idle = buildIdle(world, world.tissue.recordings, period);
+    expect(idle.beatPeriod).toBe(period);
+    expect(idle.periods[0]).toBe(period);
+    for (const p of idle.periods) expect(T % p).toBe(0);
+    const all = heartLevels(idle, T), lv = all.slice(0, period);
+    expect(new Set(lv)).toEqual(new Set([0, 1, 2, 3]));
+    let peaks = 0;
+    for (let t = 0; t < period; t++) if (lv[t] === 3 && lv[(t + period - 1) % period] !== 3) peaks++;
+    expect(peaks).toBe(2);
+    for (let t = 0; t < T; t++) expect(all[t]).toBe(lv[t % period]);
+  });
+
+  it.each([36, 24, 18])('period %i: idleCellsAt stays T-periodic', period => {
+    const world = w();
+    const idle = buildIdle(world, world.tissue.recordings, period);
+    for (let t = 0; t < T; t += 3) expect(idleCellsAt(idle, t + T, T)).toEqual(idleCellsAt(idle, t, T));
+    expect(idleCellsAt(idle, -1, T)).toEqual(idleCellsAt(idle, T - 1, T));
+  });
+
+  it('only the heartbeat depends on the period: sprouts, LEDs, bus and static cells are unchanged', () => {
+    const world = w();
+    const a = buildIdle(world, world.tissue.recordings, 24), b = buildIdle(world, world.tissue.recordings, 36);
+    expect({ ...b, beatPeriod: 24, periods: [] }).toEqual({ ...a, periods: [] });
+    expect(b.periods.slice(1)).toEqual(a.periods.slice(1));
+  });
+
+  it('the default period equals an explicit 24', () => {
+    const world = w();
+    expect(buildIdle(world, world.tissue.recordings)).toEqual(buildIdle(world, world.tissue.recordings, 24));
+    expect(idleOf(SEEDS[0]).beatPeriod).toBe(24);
+  });
+});

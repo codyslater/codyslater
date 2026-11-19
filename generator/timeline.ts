@@ -15,6 +15,7 @@ import {
 import { createRenderer, drawStatic, readFrame } from './render.js';
 import { mulberry32 } from './rng.js';
 import { buildAnswers, buildWake } from './boardlife.js';
+import { DEFAULT_ACTIVITY, HEARTBEAT_PERIOD, SPONTANEOUS_FIRINGS, assertActivity, paceOf, type Activity } from './activity.js';
 import { buildIdle } from './idle.js';
 import { buildTissue } from './tissue.js';
 
@@ -44,7 +45,11 @@ export const DEFAULT_OUT = 'banner.gif';
  * soup runs off a third, the §13.4 hash chain `mulberry32(seed ^ 0x50a9)`, so a
  * change in candidate count can never shift the board.
  */
-export function buildWorld(seed: number, T = DEFAULT_T): World {
+export function buildWorld(seed: number, T = DEFAULT_T, activity: Activity = DEFAULT_ACTIVITY): World {
+  // The activity sets the PACE of the two living layers below and nothing else: it is validated
+  // up front so a malformed week fails before any work, and read only where those builders are called.
+  assertActivity(activity);
+  const pace = paceOf(activity);
   const rng = mulberry32(seed);
   const layout = buildLayout(rng);
 
@@ -67,20 +72,20 @@ export function buildWorld(seed: number, T = DEFAULT_T): World {
   // The board is assembled first and the wake and answers are attached to the SAME object, so
   // boardlife's per-world cache keys on the world that ships. `wake` and `answers` are the only
   // fields unset while their builders run, and the builders read neither.
-  const tissue = buildTissue(seed, events, layout.accents, T);
+  const tissue = buildTissue(seed, events, layout.accents, T, SPONTANEOUS_FIRINGS[pace]);
   const world = {
     seed, T, accents: layout.accents,
     components: layout.components, sections: layout.sections,
     dressing: layout.dressing, mountHoles: layout.mountHoles,
     nets, graph, fabric,
     flows, events, takeovers,
-    soup, arc, tissue,
+    soup, arc, tissue, activity,
   } as World;
   world.wake = buildWake(world);
   world.answers = buildAnswers(world, tissue.recordings);
   // The idle layer reads the assembled board and the tissue's recordings; its own stream is
   // `seed ^ 0x1d1e`, so nothing above moves.
-  world.idle = buildIdle(world, tissue.recordings);
+  world.idle = buildIdle(world, tissue.recordings, HEARTBEAT_PERIOD[pace]);
   return world;
 }
 

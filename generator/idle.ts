@@ -43,6 +43,8 @@ export interface Idle {
   /** the CPU's centre block the heartbeat lights */
   heart: Rect;
   recordings: { frame: number; finger: number }[];
+  /** the heartbeat's period in frames: 36 calm, 24 steady, 18 busy (the activity's pace) */
+  beatPeriod: number;
   /** every period this layer runs on, all dividing 288 */
   periods: number[];
 }
@@ -258,13 +260,24 @@ function buildLeds(rng: Rng, world: World, clear: Uint8Array): IdleLed[] {
 }
 
 // ---------------------------------------------------------------- the build
-const BEAT_PERIOD = 24;
-/** the lub-dub, level 0..3 per frame of the beat */
-const BEAT = [1, 2, 3, 3, 2, 1, 0, 0, 1, 2, 3, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+/** the steady lub-dub, level 0..3 per frame of its 24-frame beat */
+const BEAT_24 = [1, 2, 3, 3, 2, 1, 0, 0, 1, 2, 3, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+/** The beat for each pace: two peaks per period, three steps. Calm (36) is the steady beat slowed by
+ * half again (each frame of it held 1.5 frames), busy (18) is drawn out a frame at a time, since a
+ * 3:4 squeeze of the steady table would drop the beat's gap. */
+const BEATS: Record<number, readonly number[]> = {
+  36: Array.from({ length: 36 }, (_, f) => BEAT_24[Math.floor((f * 24) / 36)]),
+  24: BEAT_24,
+  18: [1, 2, 3, 2, 1, 0, 0, 1, 2, 3, 2, 1, 0, 0, 0, 0, 0, 0],
+};
+const STEADY_BEAT = 24;
 const FAN_PERIOD = 12;
 const DIMM_PERIODS = [36, 48, 72, 96];
 
-export function buildIdle(world: World, recordings: readonly Recording[]): Idle {
+/** `beatPeriod` is the CPU heartbeat's period (36 calm, 24 steady, 18 busy); only the heartbeat
+ * reads it, so the sprouts, LEDs and bus are the same for every pace. */
+export function buildIdle(world: World, recordings: readonly Recording[], beatPeriod = STEADY_BEAT): Idle {
+  if (!BEATS[beatPeriod]) throw new Error(`idle: beat period must be one of ${Object.keys(BEATS).join(', ')}, got ${JSON.stringify(beatPeriod)}`);
   const rng = mulberry32(world.seed ^ 0x1d1e);
   const clear = clearMap(inkMap(world));
 
@@ -285,12 +298,12 @@ export function buildIdle(world: World, recordings: readonly Recording[]): Idle 
   for (const s of sprouts) for (const c of s.cells.slice(0, s.base)) staticCells.push({ x: c.x, y: c.y, color: SPROUT_REST });
   for (const l of leds) staticCells.push({ x: l.x, y: l.y, color: onBg(l.color, LED_DIM) });
 
-  const periods = [BEAT_PERIOD, FAN_PERIOD, ...sprouts.filter(s => s.period).map(s => s.period),
+  const periods = [beatPeriod, FAN_PERIOD, ...sprouts.filter(s => s.period).map(s => s.period),
     ...dimms.map(d => d.period), ...leds.map(l => l.period)];
   return {
     staticCells, sprouts, leds, dimms, heart,
     recordings: recordings.map(r => ({ frame: r.frame, finger: r.finger })),
-    periods,
+    beatPeriod, periods,
   };
 }
 
@@ -318,7 +331,7 @@ export function idleCellsAt(idle: Idle, t: number, T: number): IdleCell[] {
   }
 
   // the heartbeat: concentric, brightest at the core
-  const lv = BEAT[mod(f, BEAT_PERIOD)];
+  const lv = BEATS[idle.beatPeriod][mod(f, idle.beatPeriod)];
   if (lv > 0 && idle.heart.w > 0) {
     const { x, y, w, h } = idle.heart;
     for (let j = 0; j < h; j++)
