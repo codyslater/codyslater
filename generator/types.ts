@@ -1,3 +1,6 @@
+import type { Answer, Wake } from './boardlife.js';
+import type { Tissue } from './tissue.js';
+
 export interface Rect { x: number; y: number; w: number; h: number; }
 export interface Cell { x: number; y: number; }
 
@@ -192,4 +195,10 @@ export interface World {
   soup: SoupPick;
   /** arc length in frames: `SOUP.COPIES * T` */
   arc: number;
+  /** the three neurons in the void, wired to the gold fingers (built after the soup) */
+  tissue: Tissue;
+  /** copper cells a flow has just left, fading in discrete steps */
+  wake: Wake;
+  /** the board's answer to each of the tissue's recordings */
+  answers: Answer[];
 }

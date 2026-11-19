@@ -14,6 +14,8 @@ import {
 } from './creatures.js';
 import { createRenderer, drawStatic, readFrame } from './render.js';
 import { mulberry32 } from './rng.js';
+import { buildAnswers, buildWake } from './boardlife.js';
+import { buildTissue } from './tissue.js';
 
 export const mod = (n: number, m: number): number => ((n % m) + m) % m;
 
@@ -59,14 +61,23 @@ export function buildWorld(seed: number, T = DEFAULT_T): World {
   const arc = genLength(T);
   const soup = findSoup(seed, buildReleaseSchedule(events, T), arc, T, ACCENT_LIST);
 
-  return {
+  // The living layers come last, off their own streams (the tissue seeds from `seed ^ 0x7155`;
+  // wake and answers are pure functions of the assembled board), so no field above moves.
+  // The board is assembled first and the wake and answers are attached to the SAME object, so
+  // boardlife's per-world cache keys on the world that ships. `wake` and `answers` are the only
+  // fields unset while their builders run, and the builders read neither.
+  const tissue = buildTissue(seed, events, layout.accents, T);
+  const world = {
     seed, T, accents: layout.accents,
     components: layout.components, sections: layout.sections,
     dressing: layout.dressing, mountHoles: layout.mountHoles,
     nets, graph, fabric,
     flows, events, takeovers,
-    soup, arc,
-  };
+    soup, arc, tissue,
+  } as World;
+  world.wake = buildWake(world);
+  world.answers = buildAnswers(world, tissue.recordings);
+  return world;
 }
 
 // ---------------------------------------------------------------------------

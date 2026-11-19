@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   BOARD_RIGHT, CELL, COLORS, FABRIC_COLOR, FINGERS, GOLD, GRID_H, GRID_W, HEIGHT, NAME, NAME_ZONE,
-  REV_RIGHT_PX, REV_ZONE, THESIS_ZONE, WIDTH,
+  REV_RIGHT_PX, REV_ZONE, THESIS_ZONE, VOID_BG, WIDTH,
 } from './layout.js';
-import { PALETTE, createRenderer, drawStatic, hot, mixOnBg, readFrame, trailColorAt } from './render.js';
+import {
+  COPPER_REST, PALETTE, WAKE_LEVELS, createRenderer, drawStatic, hot, mixOnBg, readFrame, trailColorAt,
+} from './render.js';
+import { ANSWER_FADE, ANSWER_HOLD, answerSpikeAt, wakeCellsAt } from './boardlife.js';
+import { TISSUE_COLOURS, tissueCellsAt } from './tissue.js';
 import { FINGER_FLASH, TRAIL, flowDrawn } from './signals.js';
 import { visibleAges } from './creatures.js';
 import { buildWorld } from './timeline.js';
@@ -52,6 +56,32 @@ const countInk = (data: Uint8ClampedArray, z: { x: number; y: number; w: number;
   return n;
 };
 const dataOf = readFrame;
+
+const compCellSet = (w: World): Set<string> => {
+  const out = new Set<string>();
+  for (const c of w.components)
+    for (let y = c.rect.y; y < c.rect.y + c.rect.h; y++)
+      for (let x = c.rect.x; x < c.rect.x + c.rect.w; x++) out.add(`${x},${y}`);
+  return out;
+};
+/** Soup cells at t, CONSERVATIVE: a bonded particle may bob one row, so both rows count. */
+const soupCells = (w: World, t: number): Set<string> => {
+  const out = new Set<string>();
+  for (const age of visibleAges(t, T)) {
+    const st = w.soup.frames[age];
+    for (const p of st.parts) { out.add(`${Math.round(p.x)},${Math.round(p.y)}`); out.add(`${Math.round(p.x)},${Math.round(p.y) + 1}`); }
+    for (const c of st.crust) out.add(`${c.x},${c.y}`);
+  }
+  return out;
+};
+const flowCells = (w: World, t: number): Set<string> => {
+  const out = new Set<string>();
+  for (const f of w.flows) for (const c of flowDrawn(f, t, T)) out.add(`${c.x},${c.y}`);
+  return out;
+};
+const spikeCells = (w: World, t: number): Set<string> =>
+  new Set(answerSpikeAt(w.answers, t, T).map(c => `${c.x},${c.y}`));
+const SPREAD = [0, 20, 41, 97, 150, 203, 250, 275];
 
 describe('colour helpers', () => {
   it('mixOnBg blends toward the substrate; hot blends toward white', () => {
@@ -108,22 +138,25 @@ describe('§13.2 the flow-trail ramp', () => {
 });
 
 describe('the static board', () => {
-  it('draws traces at the accent\'s FULL value', () => {
+  it('draws traces at the RESTING copper level — the lit value is held for flows and wakes', () => {
+    // Was "draws traces at the accent's FULL value" (PALETTE.trace = 1.0). The
+    // living board rests dim: copper is COPPER_REST of the accent on the substrate,
+    // and a flow, its wake or an answer is what lights it. PALETTE.trace still means
+    // "the lit value" (1.0) and is pinned above.
     const w = world();
     const data = staticData();
-    const compCells = new Set<string>();
-    for (const c of w.components)
-      for (let y = c.rect.y; y < c.rect.y + c.rect.h; y++)
-        for (let x = c.rect.x; x < c.rect.x + c.rect.w; x++) compCells.add(`${x},${y}`);
+    const comps = compCellSet(w);
+    const owner = new Map<string, string>();       // the last net to paint a cell wins
+    for (const net of w.nets) for (const c of net.cells) owner.set(`${c.x},${c.y}`, net.color);
     let checked = 0;
-    for (const net of w.nets)
-      for (const c of net.cells) {
-        if (compCells.has(`${c.x},${c.y}`) || c.x >= FINGERS[0].x) continue;
-        if (hexAt(data, c.x, c.y) === net.color) checked++;
-      }
-    // most trace cells are painted in the pure accent (some are overdrawn by a
-    // later net's own clearance-free bundle sibling, which is still an accent)
+    for (const [k, color] of owner) {
+      const [x, y] = k.split(',').map(Number);
+      if (comps.has(k) || x >= FINGERS[0].x || x < 0 || y < 0 || y >= GRID_H) continue;
+      expect(`${k} ${hexAt(data, x, y)}`).toBe(`${k} ${mixOnBg(color, COPPER_REST)}`);
+      checked++;
+    }
     expect(checked).toBeGreaterThan(1000);
+    expect(COPPER_REST).toBe(0.45);
   });
 
   it('draws the §13.1 fabric in #444444, under the hardware and never over a live trace', () => {
@@ -289,6 +322,7 @@ describe('the frame', () => {
       for (const f of w.flows) cells.push(...flowDrawn(f, t, T));
       for (const age of visibleAges(t, T))
         for (const p of w.soup.frames[age].parts) cells.push({ x: Math.round(p.x), y: Math.round(p.y) });
+      cells.push(...wakeCellsAt(w.wake, t), ...tissueCellsAt(w.tissue, t), ...w.tissue.staticCells);
       for (const c of cells) {
         if (c.x < 0 || c.x >= GRID_W || c.y < 0 || c.y >= GRID_H) continue;
         const i0 = ((c.y * CELL) * WIDTH + c.x * CELL) * 4;
@@ -344,6 +378,144 @@ describe('the frame', () => {
       for (let x = comp.rect.x; x < comp.rect.x + comp.rect.w; x++)
         if (hexAt(data, x, y) !== hexAt(base, x, y)) changed++;
     expect(changed).toBeGreaterThan(4);
+  });
+});
+
+describe('the living board', () => {
+  it('lights the wake: every uncovered wake cell is the flow\'s colour at its stepped level', () => {
+    const w = world();
+    const render = renderer();
+    expect(WAKE_LEVELS).toEqual([1.0, 0.8, 0.64, 0.52]);
+    const comps = compCellSet(w);
+    let checked = 0;
+    const steps = new Set<number>();
+    for (const t of SPREAD) {
+      const d = dataOf(render(t));
+      const covered = [flowCells(w, t), spikeCells(w, t), soupCells(w, t)];
+      for (const c of wakeCellsAt(w.wake, t)) {
+        const k = `${c.x},${c.y}`;
+        if (comps.has(k) || covered.some(s => s.has(k))) continue;
+        expect(`t${t} ${k} ${hexAt(d, c.x, c.y)}`).toBe(`t${t} ${k} ${mixOnBg(c.color, WAKE_LEVELS[c.step])}`);
+        steps.add(c.step);
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThan(200);
+    expect(steps.size).toBe(4);                  // every fade step is actually exercised
+  });
+
+  it('rests dim: copper no flow, wake or answer touches shows COPPER_REST in the frame', () => {
+    const w = world();
+    const render = renderer();
+    const comps = compCellSet(w);
+    const owner = new Map<string, string>();
+    for (const net of w.nets) for (const c of net.cells) owner.set(`${c.x},${c.y}`, net.color);
+    let checked = 0;
+    for (const t of [0, 97, 200]) {
+      const d = dataOf(render(t));
+      const touched = [flowCells(w, t), spikeCells(w, t), new Set(wakeCellsAt(w.wake, t).map(c => `${c.x},${c.y}`))];
+      for (const [k, color] of owner) {
+        const [x, y] = k.split(',').map(Number);
+        if (comps.has(k) || x >= FINGERS[0].x || x < 0 || y < 0 || y >= GRID_H || touched.some(s => s.has(k))) continue;
+        expect(`t${t} ${k} ${hexAt(d, x, y)}`).toBe(`t${t} ${k} ${mixOnBg(color, COPPER_REST)}`);
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThan(2000);
+  });
+
+  it('paints the resting arbor into the static layer, in the void', () => {
+    const w = world();
+    const data = staticData();
+    expect(w.tissue.staticCells.length).toBeGreaterThan(100);
+    for (const c of w.tissue.staticCells)
+      expect(`${c.x},${c.y} ${hexAt(data, c.x, c.y)}`).toBe(`${c.x},${c.y} ${c.color}`);
+  });
+
+  it('paints the tissue\'s dynamic overlay unless a soup particle or a flow is on the cell', () => {
+    const w = world();
+    const render = renderer();
+    let checked = 0;
+    for (const t of SPREAD) {
+      const d = dataOf(render(t));
+      const covered = [flowCells(w, t), soupCells(w, t)];
+      const last = new Map<string, string>();      // a later cell of one frame repaints an earlier one
+      for (const c of tissueCellsAt(w.tissue, t)) last.set(`${c.x},${c.y}`, c.color);
+      for (const [k, color] of last) {
+        if (covered.some(s => s.has(k))) continue;
+        const [x, y] = k.split(',').map(Number);
+        expect(`t${t} ${k} ${hexAt(d, x, y)}`).toBe(`t${t} ${k} ${color}`);
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThan(100);
+  });
+
+  it('washes the answering chip on arrival and releases it after hold + fade', () => {
+    const w = world();
+    const render = renderer();
+    const base = staticData();
+    const a = w.answers[0];
+    expect(a).toBeDefined();
+    const r = w.components[a.component].rect;
+    const diff = (p: Uint8ClampedArray, q: Uint8ClampedArray): number => {
+      let n = 0;
+      for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) if (hexAt(p, x, y) !== hexAt(q, x, y)) n++;
+      return n;
+    };
+    const at = (k: number): number => ((a.arriveFrame + k) % T + T) % T;
+    const on = dataOf(render(at(1)));
+    expect(diff(on, base)).toBeGreaterThan(4);
+    expect(diff(on, dataOf(render(at(-1))))).toBeGreaterThan(4);
+    // The same frame from a world without THIS answer: other answers (same chip) stay, so a
+    // later answer's own wash cannot pass for this one's residue.
+    const without = createRenderer({ ...w, answers: w.answers.filter(x => x !== a) });
+    expect(diff(on, dataOf(without(at(1))))).toBeGreaterThan(4);                // it IS the answer wash
+    const late = ANSWER_HOLD + ANSWER_FADE + 2;
+    expect(diff(dataOf(render(at(late))), dataOf(without(at(late))))).toBe(0);  // and it is gone
+  });
+
+  it('runs the answer spike: a white head on its path, painted over the flows', () => {
+    const w = world();
+    const render = renderer();
+    const a = w.answers[0];
+    const L = a.path.length;
+    let checked = 0;
+    for (const frac of [0.3, 0.5, 0.7]) {
+      const target = Math.floor(L * frac);
+      // the first age whose head cell is on the path at `target` or later, and paintable
+      let age = Math.floor(target / 2.5);
+      while (age < Math.ceil(L / 2.5) - 1 && a.hidden?.[Math.floor(age * 2.5)]) age++;
+      const i = Math.floor(age * 2.5);
+      if (a.hidden?.[i]) continue;
+      const t = (a.recording.frame + age) % T;
+      const others = w.answers.filter(x => x !== a).flatMap(x => answerSpikeAt([x], t, T));
+      const p = a.path[i];
+      if (others.some(c => c.x === p.x && c.y === p.y)) continue;
+      expect(`t${t} ${p.x},${p.y} ${hexAt(dataOf(render(t)), p.x, p.y)}`).toBe(`t${t} ${p.x},${p.y} #ffffff`);
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(0);
+  });
+
+  it('every colour the void shows is soup, a flow, VOID_BG or one of TISSUE_COLOURS', () => {
+    const w = world();
+    const render = renderer();
+    const allowed = new Set<string>([VOID_BG, ...TISSUE_COLOURS]);
+    const stray = new Map<string, number>();
+    let tissueSeen = 0;
+    for (let t = 0; t < T; t += 24) {
+      const d = dataOf(render(t));
+      const covered = [flowCells(w, t), soupCells(w, t)];
+      for (let y = 0; y < GRID_H; y++)
+        for (let x = BOARD_RIGHT + 1; x < GRID_W; x++) {
+          if (covered.some(s => s.has(`${x},${y}`))) continue;
+          const c = hexAt(d, x, y);
+          if (allowed.has(c)) { if (c !== VOID_BG) tissueSeen++; } else stray.set(c, (stray.get(c) ?? 0) + 1);
+        }
+    }
+    expect(JSON.stringify([...stray])).toBe('[]');
+    expect(tissueSeen).toBeGreaterThan(1000);
   });
 });
 

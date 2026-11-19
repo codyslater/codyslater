@@ -8,6 +8,8 @@ import {
 import { drawComponent, LEVEL_LIT } from './sprites.js';
 import { SLOTS_PER_FRAME, FINGER_FLASH, contestedRingColor, washAt } from './signals.js';
 import { visibleAges } from './creatures.js';
+import { answerSpikeAt, answerWashAt, wakeCellsAt } from './boardlife.js';
+import { tissueCellsAt } from './tissue.js';
 import type { BoardComponent, DressingFeature, SoupState, World } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -71,6 +73,18 @@ const box = (ctx: SKRSContext2D, x: number, y: number, w: number, h: number, col
  * from original ones."
  */
 export const PALETTE = { trace: 1.0, flowHead: 1.0, flowTail: 0.75, washCeil: 1.0 } as const;
+
+/**
+ * The living board's copper RESTS dim: a net cell is its accent at this share on
+ * the substrate, and only a flow, its wake or an answer lights it. `PALETTE.trace`
+ * stays "the lit value" (1.0), which is what a flow's own colour is measured from.
+ * 5 accents -> 5 resting colours.
+ */
+export const COPPER_REST = 0.45;
+
+/** A wake cell's level by fade step (`WakeCell.step`), in the FLOW's colour: 4
+ * steps x the flow colours (5) = 20 colours. */
+export const WAKE_LEVELS = [1.0, 0.8, 0.64, 0.52] as const;
 
 /** §12.5's lit tone ladder, in order — the grays a wash remaps onto an accent
  * ramp — and §13.2's pinned wash stops. */
@@ -165,8 +179,8 @@ function drawTextLayer(ctx: SKRSContext2D, seed: number): void {
 /**
  * The base layer. Draw order is load-bearing:
  *
- *   substrate -> mount holes -> dressing -> silkscreen -> TRACES -> FABRIC ->
- *   hardware -> connector gold -> legend
+ *   substrate -> mount holes -> dressing -> silkscreen -> TRACES (resting) -> FABRIC ->
+ *   hardware -> connector gold -> tissue arbor (void) -> legend
  *
  * The fabric goes down after the traces and is skipped wherever a trace already
  * occupies the cell (§13.1: "beneath the hardware and never over a live trace"),
@@ -213,12 +227,13 @@ export function drawStatic(world: World): Canvas {
     }
   }
 
-  // §13.2's palette ruling: traces render at the site accent's FULL value.
+  // The living board's palette: copper rests at COPPER_REST of its accent; the lit
+  // value (PALETTE.trace) is what flows, wakes and answers bring.
   const onNet = new Set<string>();
   for (const n of world.nets)
     for (const c of n.cells) {
       onNet.add(`${c.x},${c.y}`);
-      cell(ctx, c.x, c.y, mixOnBg(n.color, PALETTE.trace));
+      cell(ctx, c.x, c.y, mixOnBg(n.color, COPPER_REST));
     }
   // §13.1's neutral interconnect fabric.
   for (const c of world.fabric) if (!onNet.has(`${c.x},${c.y}`)) cell(ctx, c.x, c.y, FABRIC_COLOR);
@@ -230,6 +245,10 @@ export function drawStatic(world: World): Canvas {
 
   ctx.fillStyle = GOLD;
   for (const f of FINGERS) ctx.fillRect(px(f.x), px(f.y), px(FINGER_W), px(f.h));
+
+  // The tissue's resting arbor lives in the void, which holds no static ink and none
+  // of the legend, so it can go down before the text without touching it.
+  for (const c of world.tissue.staticCells) cell(ctx, c.x, c.y, c.color);
 
   drawTextLayer(ctx, world.seed);
   return canvas;
@@ -423,7 +442,31 @@ export function createRenderer(world: World): (t: number) => Canvas {
       box(ctx, f.x, f.y, FINGER_W, f.h, mixOnBg(e.color, Math.max(0.35, 1 - age / FINGER_FLASH)));
     }
 
+    // The wake: copper a flow has just left, in that flow's colour, stepping down.
+    for (const c of wakeCellsAt(world.wake, t)) cell(ctx, c.x, c.y, mixOnBg(c.color, WAKE_LEVELS[c.step]));
+
+    // The tissue's moving cells, over its static arbor, under the flows (an escaping
+    // comet crosses the tissue's finger contacts) and under the soup.
+    for (const c of tissueCellsAt(world.tissue, t)) cell(ctx, c.x, c.y, c.color);
+
+    // The board answers a recording: the chip washes in the neuron's accent, over any
+    // takeover wash it is wearing (the answer wins that chip).
+    for (const a of answerWashAt(world.answers, t, world.T))
+      washComponent(ctx, baseData, world.components[a.component], a.accent, a.k, PALETTE.washCeil);
+
     drawFlows(ctx, world, t);
+
+    // The answer's spike runs over everything on the copper, head last-painted so a
+    // path that crosses itself keeps its head on top. Head 4 cells white; behind it the
+    // accent steps down through trailColorAt(accent, d - 3, 7) (the sketch's own ramp:
+    // d = 4 is the ramp's first step, and the last trail cell falls below the 0.12 cut
+    // and is simply not drawn).
+    const spike = answerSpikeAt(world.answers, t, world.T);
+    for (let i = spike.length - 1; i >= 0; i--) {
+      const c = spike[i];
+      const col = c.d < 4 ? COLORS.white : trailColorAt(c.accent, c.d - 3, 7);
+      if (col) cell(ctx, c.x, c.y, col);
+    }
 
     // The wrap: the four generation ages share the void, so the outgoing
     // generation and the incoming one are on screen together.

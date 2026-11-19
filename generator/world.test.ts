@@ -10,6 +10,7 @@ import {
   buildGraph, buildLayout, islandShape, HEIGHT, WIDTH,
 } from './layout.js';
 import { buildNets } from './growth.js';
+import { wakeCellsAt } from './boardlife.js';
 import { MIN_TRANSITS, buildFlows, distanceToConnector } from './signals.js';
 import { mulberry32 } from './rng.js';
 import { createRenderer, readFrame } from './render.js';
@@ -55,6 +56,12 @@ function digest(w: World): string {
   }));
   // the soup itself, sampled across the whole arc
   for (let age = 0; age < w.arc; age += 37) h.update(JSON.stringify(w.soup.frames[age]));
+  // the living layers: the tissue's arbor and recordings, the answers' paths, the wake at four frames
+  h.update(JSON.stringify({
+    staticCells: w.tissue.staticCells, recordings: w.tissue.recordings,
+    answers: w.answers.map(a => ({ r: a.recording, c: a.component, arrive: a.arriveFrame, path: a.path, hidden: a.hidden })),
+  }));
+  for (const t of [0, 71, 143, 215]) h.update(JSON.stringify(wakeCellsAt(w.wake, t)));
   return h.digest('hex');
 }
 
@@ -74,8 +81,8 @@ describe('§5 determinism and the amended CLI', () => {
   // `Math.random()` in a rarely-taken branch would pass every corpus test and
   // still break byte-identical daily regeneration.
   const SIM_AND_RENDER = [
-    'continuity.ts', 'creatures.ts', 'fonts.ts', 'gif.ts', 'growth.ts', 'layout.ts',
-    'render.ts', 'rng.ts', 'signals.ts', 'sprites.ts', 'timeline.ts', 'types.ts',
+    'boardlife.ts', 'continuity.ts', 'creatures.ts', 'fonts.ts', 'gif.ts', 'growth.ts', 'layout.ts',
+    'render.ts', 'rng.ts', 'signals.ts', 'sprites.ts', 'tissue.ts', 'timeline.ts', 'types.ts',
   ];
 
   /** The scan, factored out so the SCANNER itself can be shown to work. */
