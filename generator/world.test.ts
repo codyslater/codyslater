@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { checkContinuity, formatContinuity } from './continuity.js';
 import {
-  BAND, POP_BAND, RUNGS, VOID_FILL_PEAK_MAX, VOID_X0, VOID_X1, VOID_Y0, rungBand,
+  BAND, POP_BAND, RUNGS, VOID_CELLS, VOID_FILL_PEAK_MAX, VOID_X0, VOID_X1, VOID_Y0, rungBand,
 } from './creatures.js';
 import {
   ISLAND_MIN_COMPONENTS, ISLAND_MIN_CYCLE_RANK, THESIS_ZONE,
@@ -14,10 +14,12 @@ import { wakeCellsAt } from './boardlife.js';
 import { idleCellsAt } from './idle.js';
 import { MIN_TRANSITS, buildFlows, distanceToConnector } from './signals.js';
 import { mulberry32 } from './rng.js';
+import { parseActivity } from './activity.js';
 import { createRenderer, readFrame } from './render.js';
 import {
   BONDED_MEAN_MIN, DEFAULT_FPS, DEFAULT_OUT, DEFAULT_SECONDS, DEFAULT_T, MIN_FLOWS_IN_FLIGHT,
-  MIN_LIT_COMPONENTS, MOVING_BOARD_PEAK_MAX, MOVING_CANVAS_PEAK_MAX, VOID_FILL_MEAN_RANGE,
+  MIN_LIT_COMPONENTS, MOVING_BOARD_PEAK_MAX, MOVING_CANVAS_PEAK_MAX, RENDERED_VOID_PEAK_MAX,
+  VOID_FILL_MEAN_RANGE,
   buildWorld, checkInvariants, gateWorld, measureMovingCells, measureTraffic, transitsPerStream,
 } from './timeline.js';
 import type { Cell, Flow, Particle, World } from './types.js';
@@ -173,6 +175,19 @@ describe('§13.5 the frame sweep', () => {
   it.each(CORPUS)('checkInvariants is clean for seed %i', seed => {
     expect(checkInvariants(build(seed).world)).toEqual([]);
   });
+
+  // Every other gate test builds the DEFAULT (steady) fortnight. Production feeds
+  // the real one, and the pace changes what moves: a busy fortnight fires the
+  // neurons more often (more moving void cells), a calm one slows the heartbeat.
+  // So the sweep is also run at both extremes, on the pinned seed and on the
+  // corpus seed that measured the most motion when the caps were re-tuned.
+  const PACES: [string, string][] = [
+    ['busy', '4,4,4,4,4,4,4,4,4,4,4,4,4,4'], ['calm', '0,0,0,0,0,0,0,0,0,0,0,0,0,0'],
+  ];
+  it.each([20260724, 20260930].flatMap(seed => PACES.map(([pace, levels]) => ({ seed, pace, levels }))))(
+    'checkInvariants is clean for seed $seed on a $pace fortnight', ({ seed, levels }) => {
+      expect(checkInvariants(buildWorld(seed, T, parseActivity(levels)))).toEqual([]);
+    });
 
   it.each(CORPUS)('the five continuity checks report zero defects for seed %i', seed => {
     const r = checkContinuity(build(seed).world);
@@ -382,20 +397,24 @@ describe('§13.5 the frame sweep', () => {
     expect(errs.some(e => e.includes('flow slot cell in a text zone'))).toBe(true);
   });
 
-  it('detects a rendered void over §13.5\'s 6 % ceiling — measured, and now gated', () => {
+  // Full void rows of extra particles, enough that the injection ALONE is over
+  // the rendered ceiling whatever the ceiling is set to (it scales from the
+  // constant, so re-tuning the cap cannot make these two tests vacuous).
+  const VOID_W = VOID_X1 - VOID_X0 + 1;
+  const OVERFILL_ROWS = Math.ceil(RENDERED_VOID_PEAK_MAX * VOID_CELLS / VOID_W) + 2;
+
+  it('detects a rendered void over the rendered-void ceiling — measured, and gated', () => {
     const w = build(20260724).world;
-    // 408 extra particles on distinct in-domain void cells, in the frame the loop
-    // shows at t = 0: 408/5100 = 8.0 % of the void, comfortably over the ceiling.
-    // The corpus measures 3.18-4.84 %, so this is real headroom being asserted.
+    expect(OVERFILL_ROWS * VOID_W / VOID_CELLS).toBeGreaterThan(RENDERED_VOID_PEAK_MAX);
     const extra: Particle[] = [];
-    for (let y = VOID_Y0; y < VOID_Y0 + 6; y++)
+    for (let y = VOID_Y0; y < VOID_Y0 + OVERFILL_ROWS; y++)
       for (let x = VOID_X0; x <= VOID_X1; x++)
         extra.push({ x, y, vx: 0, vy: 0, c: 1, streak: 0, cluster: -1, sx: 0, sy: 0, bond: 0, eye: 0 });
     const frames = w.soup.frames.map((st, i) => (i === 0 ? { ...st, parts: [...st.parts, ...extra] } : st));
     const errs = checkInvariants({ ...w, soup: { ...w.soup, frames } });
     expect(errs.some(e => e.includes('rendered void cells'))).toBe(true);
     // and the real world is inside it on the same measurement
-    expect(measureMovingCells(w).voidPeak).toBeLessThanOrEqual(VOID_FILL_PEAK_MAX);
+    expect(measureMovingCells(w).voidPeak).toBeLessThanOrEqual(RENDERED_VOID_PEAK_MAX);
   });
 
   it('exempts a LAST RESORT pick from the rendered-void ceiling, like its model twin', () => {
@@ -405,7 +424,7 @@ describe('§13.5 the frame sweep', () => {
     // already exempt. Reported in the marker line instead.
     const w = build(20260724).world;
     const extra: Particle[] = [];
-    for (let y = VOID_Y0; y < VOID_Y0 + 6; y++)
+    for (let y = VOID_Y0; y < VOID_Y0 + OVERFILL_ROWS; y++)
       for (let x = VOID_X0; x <= VOID_X1; x++)
         extra.push({ x, y, vx: 0, vy: 0, c: 1, streak: 0, cluster: -1, sx: 0, sy: 0, bond: 0, eye: 0 });
     const frames = w.soup.frames.map((st, i) => (i === 0 ? { ...st, parts: [...st.parts, ...extra] } : st));
@@ -438,7 +457,7 @@ describe('§13.5 the moving-cell bounds', () => {
       + `void peak ${(100 * m.voidPeak).toFixed(2)}%, canvas peak ${(100 * m.canvasPeak).toFixed(2)}% mean ${(100 * m.canvasMean).toFixed(2)}%`);
     expect(m.boardPeak).toBeLessThanOrEqual(MOVING_BOARD_PEAK_MAX);
     expect(m.canvasPeak).toBeLessThanOrEqual(MOVING_CANVAS_PEAK_MAX);
-    expect(m.voidPeak).toBeLessThanOrEqual(VOID_FILL_PEAK_MAX);
+    expect(m.voidPeak).toBeLessThanOrEqual(RENDERED_VOID_PEAK_MAX);
     // not vacuous: the board really is in motion
     expect(m.boardMean).toBeGreaterThan(0.02);
   });

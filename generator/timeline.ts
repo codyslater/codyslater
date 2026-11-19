@@ -107,12 +107,32 @@ export const MIN_LIT_COMPONENTS = 3;
  * canvas cells. §12.6.4's "≤ 2.5 % differing from the fully-lit steady state" is
  * superseded: there is no steady state any more.
  *
- * Corpus at the shipped constants: board peak 10.03-13.13 %, canvas peak
- * 8.47-10.67 %. The board bound has under a point of margin on the worst seed,
- * which is precisely why it is gated rather than measured in a scratchpad.
+ * Before the living layers (2026-07) the corpus measured board peak
+ * 10.03-13.13 % and canvas peak 8.47-10.67 %, under caps of 14 % and 12 %.
+ *
+ * RE-TUNED ONCE, 2026-11-19, for the living layers (tissue, wakes, the answer,
+ * idle life, the instruments) — the owner approved the livelier board, so the
+ * ceilings moved with it rather than the layers being thinned to fit the old
+ * ones. Measured on rendered frames over 82 seeds at a steady and a busy
+ * fortnight: the 61 dates CI renders next (20261119-20270118) and the 21 seeds
+ * the suite sweeps. Worst board peak 16.55 % (20261130), canvas 13.84 % and
+ * rendered void 7.59 % (both 20260930, busy); mean board peak 14.4 %. Each cap
+ * is the worst measured plus about 1.5 points. The pace hardly moves the board
+ * figure and moves the void one by up to 1.2 points (more neuron firings).
+ * A date that still exceeds a cap fails closed in `gateWorld`: the workflow
+ * goes red and yesterday's banner stays.
  */
-export const MOVING_BOARD_PEAK_MAX = 0.14;
-export const MOVING_CANVAS_PEAK_MAX = 0.12;
+export const MOVING_BOARD_PEAK_MAX = 0.18;
+export const MOVING_CANVAS_PEAK_MAX = 0.155;
+/**
+ * The ceiling on what is DRAWN in the void, as a fraction of the void's cells.
+ * It was `VOID_FILL_PEAK_MAX` (6 %) while the soup was the only thing drawn
+ * there. The neurons now live in the void too (their spikes, growth cones and
+ * rings are moving void cells, more of them at a busy pace), so the rendered
+ * ceiling has its own constant and the SOUP MODEL's 6 % is left exactly as the
+ * ladder searches it.
+ */
+export const RENDERED_VOID_PEAK_MAX = 0.09;
 const BOARD_CELLS = (BOARD_RIGHT - 1) * GRID_H;   // 18320, §13.5's own figure
 const CANVAS_CELLS = GRID_W * GRID_H;             // 24000
 /**
@@ -418,11 +438,12 @@ export function checkInvariants(world: World, moving: MovingCells = measureMovin
     errs.push(`board cells differing from the static board peak at ${(100 * moving.boardPeak).toFixed(2)}% > ${100 * MOVING_BOARD_PEAK_MAX}%`);
   if (moving.canvasPeak > MOVING_CANVAS_PEAK_MAX)
     errs.push(`whole-canvas moving cells peak at ${(100 * moving.canvasPeak).toFixed(2)}% > ${100 * MOVING_CANVAS_PEAK_MAX}%`);
-  // §13.5's table bounds "void cells occupied (of 5100)" at peak <= 6 % — the
-  // same ceiling `world.soup.fillPeak` carries in the model, asserted here on
-  // what is actually DRAWN. It was measured by `measureMovingCells` and reported
-  // in a test but never gated; a restraint ceiling that is only ever printed is
-  // not a gate. Corpus 3.18-4.84 %.
+  // §13.5's table bounds "void cells occupied (of 5100)" at peak <= 6 % in the
+  // soup MODEL (`world.soup.fillPeak`); this asserts the same idea on what is
+  // actually DRAWN, against `RENDERED_VOID_PEAK_MAX` — its own, higher ceiling
+  // since the neurons moved into the void (see the constant). It was measured by
+  // `measureMovingCells` and reported in a test but never gated; a restraint
+  // ceiling that is only ever printed is not a gate.
   //
   // WHY IT IS NOT IN THE LADDER'S SEARCHED SET, unlike every soup bound §13.4
   // requires search parity for. This statistic is derived from the RENDER, not
@@ -438,8 +459,8 @@ export function checkInvariants(world: World, moving: MovingCells = measureMovin
   // IS the soup population that rung 4 explicitly cannot promise — gating it
   // there would fail CI on exactly the banner the exemption exists to return.
   // Reported in the marker line above instead, like its model twin.
-  if (!lastResort && moving.voidPeak > VOID_FILL_PEAK_MAX)
-    errs.push(`rendered void cells peak at ${(100 * moving.voidPeak).toFixed(2)}% > ${100 * VOID_FILL_PEAK_MAX}%`);
+  if (!lastResort && moving.voidPeak > RENDERED_VOID_PEAK_MAX)
+    errs.push(`rendered void cells peak at ${(100 * moving.voidPeak).toFixed(2)}% > ${100 * RENDERED_VOID_PEAK_MAX}%`);
 
   // ---- §13.4: the arc is bare at age S, and the seam is exact -------------
   const last = world.soup.frames[world.arc - 1];
