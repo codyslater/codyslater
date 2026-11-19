@@ -45,8 +45,8 @@ export interface Tissue {
   refractory: number[];
   /** the loop closes on itself (the simulated period repeats exactly) */
   steady: boolean;
-  /** The busiest frame's dynamic cell count BEFORE the last-resort cap. A value
-   * over BUDGET means cells were shed from that frame: a visible defect. */
+  /** The busiest frame's dynamic cell count. The frames carry all of it: nothing is
+   * shed. It may exceed BUDGET, which is only the phase search's target. */
   peak: number;
   staticCells: TissueCell[];
   /** the dynamic overlay for every frame of the loop, precomputed (frozen) */
@@ -64,7 +64,7 @@ const SOMA_POS: [number, number][] = [[254, 14], [260, 34], [254, 58]];
 const SPEED = 1.5;                                   // cells per frame
 const REFRACT = [18, 18, 48];                        // soma 3 is the recording neuron: it adapts, so
                                                      // recordings are always >= 48 frames apart
-export const BUDGET = 210;                           // dynamic cells per frame; sized so NO tested seed ever sheds (see `peak`)
+export const BUDGET = 210;                           // the phase search's TARGET for the busiest frame's dynamic cells; never a truncation (see `peak`)
 const TIP_PLAN = [2, 2, 1];                          // breathing tips per soma
 const TIP_PERIODS = [72, 96, 144, 288, 48];          // all divide 288
 const RING_R = [5, 7, 9];
@@ -619,12 +619,13 @@ function compose(
       }
     }
     // only what differs from rest
-    let list: { k: number; c: string; p: number }[] = [];
+    const list: { k: number; c: string; p: number }[] = [];
     for (const [k, v] of g) if (rest.get(k) !== v.c) list.push({ k, c: v.c, p: v.p });
+    // A frame is never truncated. There used to be a last-resort cap here that dropped the
+    // lowest layers past BUDGET; it fired silently on real dates (20261201 on a busy fortnight:
+    // 217 cells), and a missing ring or tip is a visible defect. How much may move in the void
+    // is gated where it is measured, on the rendered frames (timeline's RENDERED_VOID_PEAK_MAX).
     peak = Math.max(peak, list.length);
-    if (list.length > BUDGET) {                                          // last resort: shed the lowest layers
-      list = list.map((v, i) => ({ v, i })).sort((a, b) => b.v.p - a.v.p || a.i - b.i).slice(0, BUDGET).sort((a, b) => a.i - b.i).map(x => x.v);
-    }
     frames.push(list.map(v => Object.freeze({ x: v.k % GRID_W, y: Math.floor(v.k / GRID_W), color: v.c })));
   }
   return { frames, peak };
@@ -664,7 +665,8 @@ export function buildTissue(
   somas.forEach((s, i) => { s.cells.forEach(c => put(c, col[i][1])); s.nucleus.forEach(c => put(c, col[i][2])); });
   const staticCells = order.map(k => ({ x: k % GRID_W, y: Math.floor(k / GRID_W), color: rest.get(k)! }));
 
-  // breathing-tip phases: seeded, re-drawn until the busiest frame fits the budget untruncated
+  // breathing-tip phases: seeded, re-drawn until the busiest frame meets the budget; if none of
+  // the 40 draws does, the calmest draw is kept and drawn whole
   let phases = new Map<number, number>(), frames: TissueCell[][] = [], best = Infinity;
   for (let attempt = 0; attempt < 40; attempt++) {
     const trial = new Map<number, number>();

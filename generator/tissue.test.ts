@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ACCENT_LIST, FINGERS, GRID_W, VOID_BG } from './layout.js';
 import { mulberry32, shuffled } from './rng.js';
 import { buildWorld } from './timeline.js';
+import { parseActivity } from './activity.js';
 import {
   CONE_COLOUR, DENDRITE_COLOUR, INPUT_FINGERS, LEAD_COLOUR, LEAD_RAMP, RECORD_FINGER, TISSUE_COLOURS, buildTissue, tissueCellsAt,
   type Tissue, type TissueCell,
@@ -426,8 +427,10 @@ describe('tissue: budget and liveliness', () => {
       expect(new Set(cells.map(key)).size, `${label}: unique positions at ${f}`).toBe(cells.length);
     }
     expect(peak, `${label} peak`).toBeLessThanOrEqual(BUDGET);
-    // the cap is a last resort that must never fire: a shed ring or tip is a visible defect
-    expect(t.peak, `${label}: nothing is ever shed (uncapped peak ${t.peak})`).toBeLessThanOrEqual(BUDGET);
+    // these sampled tissues all meet the phase search's target (the budget); and whatever the
+    // peak, the frames carry all of it (nothing is shed)
+    expect(t.peak, `${label}: busiest frame ${t.peak}`).toBeLessThanOrEqual(BUDGET);
+    expect(peak, `${label}: frames carry the whole peak`).toBe(t.peak);
     peaks.push(t.peak);
     expect(worstStill, `${label} stillness`).toBeLessThanOrEqual(36);
   };
@@ -451,6 +454,18 @@ describe('tissue: budget and liveliness', () => {
     const t = tissueOf(SEEDS[0]);
     const rest = new Map(t.staticCells.map(c => [key(c), c.color]));
     for (let f = 0; f < T; f += 7) for (const c of tissueCellsAt(t, f)) expect(rest.get(key(c))).not.toBe(c.color);
+  });
+
+  it('draws a frame that is over the budget WHOLE: nothing is ever shed (seed 20261201, busy)', () => {
+    // Found 2026-11-19 while re-tuning the motion caps over the dates CI will render: on a busy
+    // fortnight this date's busiest frame has 217 dynamic cells, 7 over the budget, and the old
+    // last-resort cap silently dropped the lowest layers (a ring or a breathing tip) from the
+    // banner. The budget is the phase search's TARGET; it never truncates a frame.
+    const t = buildWorld(20261201, T, parseActivity('4,4,4,4,4,4,4,4,4,4,4,4,4,4')).tissue;
+    expect(t.peak).toBeGreaterThan(BUDGET);
+    let busiest = 0;
+    for (let f = 0; f < T; f++) busiest = Math.max(busiest, tissueCellsAt(t, f).length);
+    expect(busiest).toBe(t.peak);
   });
 
   it('reports the busiest uncapped frame across every tissue above, with headroom under the budget', () => {
