@@ -111,8 +111,11 @@ describe('buildWorld(seed, T, activity)', () => {
     expect(baseWorld().tissue.spontaneous.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('default output is byte-identical to the pre-activity banner (golden digest of tissue, idle, answers, wake)', () => {
-    // Computed on the commit BEFORE activity existed, with `beatPeriod` (the one new field) left out.
+  it('default output is pinned (golden digest of tissue, idle, answers, wake)', () => {
+    // GOLDEN_UNPACED was computed on the commit BEFORE activity existed and has never moved: the
+    // default fortnight changes nothing the pace does not read. GOLDEN_PACED (tissue + idle, with
+    // `beatPeriod` left out) started the same way and was re-pinned once, on purpose, when the idle
+    // layer itself changed (2026-11-19: five LEDs, and the repressilator's three 2x2 lights).
     const got = sha(paced(baseWorld()));
     expect(got).toBe(GOLDEN_PACED);
     expect(sha(unpaced(baseWorld()))).toBe(GOLDEN_UNPACED);
@@ -151,5 +154,5 @@ describe('buildWorld(seed, T, activity)', () => {
   });
 });
 
-const GOLDEN_PACED = '2d09785c4cb0f05e1595b0333ec9e866dd0a352629e45699cd10f1c156ec7e2d';
+const GOLDEN_PACED = '26cb15de20a9c9422a3036cb5df4e7b2443dca22c95d9b19db794ef7e7aa73f8';
 const GOLDEN_UNPACED = 'cf1e8c2e5e895768b41e5fdc0bde8b66fd6d5d0741df1e6c978858e78b79cee6';
