@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { encodeGif } from './gif.js';
+import { decodeGif } from './gif-decode.js';
+import { diffFrame, encodeGif, quantizeFrames } from './gif.js';
 import { HEIGHT, WIDTH } from './layout.js';
 import { createRenderer } from './render.js';
 import { DEFAULT_T, buildWorld } from './timeline.js';
@@ -9,16 +10,61 @@ import { DEFAULT_T, buildWorld } from './timeline.js';
 /** The pinned production configuration (§13.4 / §13.6's reference command). */
 const PINNED = { seed: 20260724, T: DEFAULT_T, fps: 12 };
 
-let cached: Uint8Array | undefined;
-function pinnedGif(): Uint8Array {
-  if (cached) return cached;
+let cachedFrames: Uint8ClampedArray[] | undefined;
+function pinnedFrames(): Uint8ClampedArray[] {
+  if (cachedFrames) return cachedFrames;
   const world = buildWorld(PINNED.seed, PINNED.T);
   const render = createRenderer(world);
   const frames: Uint8ClampedArray[] = [];
   for (let t = 0; t < PINNED.T; t++)
     frames.push(render(t).getContext('2d').getImageData(0, 0, WIDTH, HEIGHT).data);
-  cached = encodeGif(frames, WIDTH, HEIGHT, PINNED.fps);
+  cachedFrames = frames;
+  return frames;
+}
+
+let cached: Uint8Array | undefined;
+function pinnedGif(): Uint8Array {
+  if (cached) return cached;
+  cached = encodeGif(pinnedFrames(), WIDTH, HEIGHT, PINNED.fps);
   return cached;
+}
+
+/** A tiny animation with a still background, a moving block, a colour change
+ * and one frame identical to its predecessor (an all-unchanged difference). */
+function toyFrames(w: number, h: number): Uint8ClampedArray[] {
+  const colours = [[200, 40, 40], [40, 200, 40], [40, 40, 200], [220, 220, 40]];
+  const frames: Uint8ClampedArray[] = [];
+  for (let f = 0; f < 6; f++) {
+    const step = f === 3 ? 2 : f > 3 ? f - 1 : f;   // frame 3 repeats frame 2
+    const px = new Uint8ClampedArray(w * h * 4);
+    for (let i = 0; i < w * h; i++) px.set([16, 16, 16, 255], i * 4);
+    for (let y = 2; y < 6; y++) for (let x = 0; x < 4; x++) {
+      const c = colours[step % colours.length];
+      px.set([c[0], c[1], c[2], 255], (y * w + x + step * 5) * 4);
+    }
+    frames.push(px);
+  }
+  return frames;
+}
+
+/** Count the pixels where the played-back file and the quantized source frame
+ * show different colours. Compared as RGB, not as indices: the file's table has
+ * one extra slot (the transparent index) the quantizer's palette does not. */
+function playbackMismatches(bytes: Uint8Array, frames: Uint8ClampedArray[], w: number, h: number): number {
+  const decoded = decodeGif(bytes);
+  const q = quantizeFrames(frames, w, h);
+  expect(decoded.canvases).toHaveLength(frames.length);
+  let bad = 0;
+  for (let f = 0; f < frames.length; f++) {
+    const canvas = decoded.canvases[f];
+    const want = q.indexed[f];
+    for (let i = 0; i < w * h; i++) {
+      const a = decoded.palette[canvas[i]];
+      const b = q.palette[want[i]];
+      if (a[0] !== b[0] || a[1] !== b[1] || a[2] !== b[2]) bad++;
+    }
+  }
+  return bad;
 }
 
 /** GIF89a: the logical screen descriptor's packed byte carries the global
@@ -60,11 +106,14 @@ describe('encodeGif', () => {
 });
 
 describe('§6 / §13.5 the size gate (real, not skipped)', () => {
-  it('the pinned configuration encodes inside the 8 MB hard gate and the 7.5 MB target', () => {
+  it('the pinned configuration encodes inside the 8 MB hard gate and the 1.5 MB differenced target', () => {
     const mb = pinnedGif().length / 1024 / 1024;
     console.log(`pinned GIF (seed ${PINNED.seed}, T=${PINNED.T} @ ${PINNED.fps}fps): ${mb.toFixed(2)} MB`);
     expect(mb).toBeLessThanOrEqual(8);      // §6's hard gate — CI fails above it
-    expect(mb).toBeLessThanOrEqual(7.5);    // §13.5's working target for this config
+    // Full frames measured 6.98 MB for this configuration; storing only the
+    // changed pixels measured 0.87 MB. A regression to full frames lands far
+    // above this line.
+    expect(mb).toBeLessThanOrEqual(1.5);
   });
 
   it('§13.2: the encoded palette stays inside §3\'s 64 colours', () => {
@@ -72,6 +121,34 @@ describe('§6 / §13.5 the size gate (real, not skipped)', () => {
     console.log(`encoded global colour table: ${entries} entries, ${distinct} distinct triples`);
     expect(entries).toBeLessThanOrEqual(64);
     expect(distinct).toBeLessThanOrEqual(64);
+  });
+});
+
+describe('inter-frame differencing', () => {
+  it('diffFrame keeps a changed pixel and blanks an unchanged one', () => {
+    const prev = Uint8Array.from([1, 2, 3, 4, 5]);
+    const cur = Uint8Array.from([1, 9, 3, 0, 5]);
+    expect(Array.from(diffFrame(prev, cur, 63))).toEqual([63, 9, 63, 0, 63]);
+  });
+
+  it('a small animation plays back to exactly its quantized frames', () => {
+    const w = 40, h = 12;
+    const frames = toyFrames(w, h);
+    expect(playbackMismatches(encodeGif(frames, w, h, 12), frames, w, h)).toBe(0);
+  });
+
+  it('every frame after the first is a difference left in place over the last', () => {
+    const w = 40, h = 12;
+    const { controls, loop } = decodeGif(encodeGif(toyFrames(w, h), w, h, 12));
+    expect(loop).toBe(0);
+    expect(controls[0].transparent).toBeNull();   // the first frame is the whole picture
+    for (const c of controls) expect(c.disposal).toBe(1);
+    for (const c of controls.slice(1)) expect(c.transparent).not.toBeNull();
+    for (const c of controls) expect(c.delayCs).toBe(8);   // 12 fps -> 83 ms -> 8 cs
+  });
+
+  it('the pinned loop plays back pixel-identical to its quantized frames', () => {
+    expect(playbackMismatches(pinnedGif(), pinnedFrames(), WIDTH, HEIGHT)).toBe(0);
   });
 });
 
