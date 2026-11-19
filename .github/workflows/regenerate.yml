@@ -20,36 +20,67 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
       - run: npm ci
-      # The seed is the date of Cody's last public GitHub activity, so REV shows
-      # when he was last active and the board only evolves on days he was. On a
-      # quiet day the render is byte-identical and the commit step skips.
-      - name: resolve seed from last public activity
+      # Two daily inputs, both from the contribution calendar (it counts private
+      # work too, as bare numbers, exactly as the profile page shows):
+      #   seed      the last ACTIVE day, which is also the REV date on the board
+      #   activity  the 14 contribution levels (0-4) ending on that day; they set
+      #             the activity strip and the pace (heartbeat, firing rate)
+      # Both are anchored to the last active day, not to today, so on a quiet day
+      # the render is byte-identical and the commit step skips.
+      # If the calendar cannot be read, fall back to the date of the last public
+      # event (the old source), then to today, and render a neutral week.
+      - name: resolve seed and activity
         id: seed
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ACTIVITY=$(curl -sf --connect-timeout 5 --max-time 10 \
-            "https://api.github.com/users/codyslater/events/public" \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            | jq -r 'if type == "array" then (.[0].created_at // empty) else empty end' \
-            | cut -dT -f1 | tr -d '-' || true)
-          if ! [[ "$ACTIVITY" =~ ^[0-9]{8}$ ]]; then ACTIVITY=$(date +%Y%m%d); fi
-          echo "seed=$ACTIVITY" >> "$GITHUB_OUTPUT"
-      # The render fails closed: main.ts runs §13.5/§13.6's full-loop sweep on
+          SEED=""; ACTIVITY=""
+          QUERY='query($login:String!){user(login:$login){contributionsCollection{contributionCalendar{weeks{contributionDays{date contributionCount contributionLevel}}}}}}'
+          if gh api graphql -F login=codyslater -f query="$QUERY" > calendar.json 2> calendar.err \
+             && OUT=$(npx tsx generator/resolve-activity.ts calendar.json); then
+            SEED=$(printf '%s\n' "$OUT" | sed -n 's/^seed=//p')
+            ACTIVITY=$(printf '%s\n' "$OUT" | sed -n 's/^activity=//p')
+          else
+            echo "::warning::contribution calendar unavailable; falling back to the public events feed"
+            cat calendar.err || true
+          fi
+          if ! [[ "$SEED" =~ ^[0-9]{8}$ ]] || ! [[ "$ACTIVITY" =~ ^[0-4](,[0-4]){13}$ ]]; then
+            ACTIVITY=""
+            SEED=$(curl -sf --connect-timeout 5 --max-time 10 \
+              "https://api.github.com/users/codyslater/events/public" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              | jq -r 'if type == "array" then (.[0].created_at // empty) else empty end' \
+              | cut -dT -f1 | tr -d '-' || true)
+            if ! [[ "$SEED" =~ ^[0-9]{8}$ ]]; then SEED=$(date +%Y%m%d); fi
+          fi
+          rm -f calendar.json calendar.err
+          echo "seed=$SEED" >> "$GITHUB_OUTPUT"
+          echo "activity=$ACTIVITY" >> "$GITHUB_OUTPUT"
+          echo "seed $SEED, activity ${ACTIVITY:-<neutral week>}"
+      # The render fails closed: main.ts runs the full-loop invariant sweep on
       # THIS seed's world, between rendering and encoding, and exits non-zero
-      # with the violations rather than writing banner.gif. `npm test` below
-      # gates the suite's pinned configuration; only this step gates $SEED.
+      # with the violations rather than writing banner.gif. The tests below gate
+      # the pinned configuration; only this step gates $SEED.
       - name: render
         env:
           SEED: ${{ steps.seed.outputs.seed }}
-        run: npm run render -- --seed "$SEED" --out banner.gif
-      # CI runs only the environment-drift canaries (reference byte-identity,
-      # determinism, fonts, geometry): the full suite's world-building tests
-      # exceed hosted-runner memory even serialized (exit 143 / runner kill).
-      # Per-seed protection is NOT here anyway — the render step above runs
-      # the complete §13.5 invariant sweep on $SEED's world inside main.ts
-      # and fails closed. The full suite remains the dev-machine bar.
-      - run: npx vitest run generator/gif.test.ts generator/rng.test.ts generator/fonts.test.ts generator/layout.test.ts --maxWorkers=1
+          ACTIVITY: ${{ steps.seed.outputs.activity }}
+        run: |
+          if [ -n "$ACTIVITY" ]; then
+            npm run render -- --seed "$SEED" --activity "$ACTIVITY" --out banner.gif
+          else
+            npm run render -- --seed "$SEED" --out banner.gif
+          fi
+      # CI runs the environment-drift canaries (reference byte-identity,
+      # determinism, fonts, geometry) plus the fast pure-data tests for the
+      # inputs this workflow feeds in. The full suite used to exceed runner
+      # memory (exit 143); that was a native-memory leak in frame reads, fixed
+      # 2026-11 (the suite now peaks near 1.7 GB), so memory no longer forces
+      # this cut. It stays cut for time: world.test.ts alone runs about 2.5 min
+      # and asserts wall-clock budgets that a slow runner could fail, and a
+      # failure here blocks the day's banner. Per-seed protection is the render
+      # step above. The full suite remains the dev-machine bar.
+      - run: npx vitest run generator/gif.test.ts generator/rng.test.ts generator/fonts.test.ts generator/layout.test.ts generator/activity.test.ts generator/calendar.test.ts generator/instruments.test.ts --maxWorkers=1
       - name: commit if changed
         run: |
           if ! git diff --quiet banner.gif; then
