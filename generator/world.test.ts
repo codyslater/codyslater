@@ -12,7 +12,7 @@ import {
 import { buildNets } from './growth.js';
 import { MIN_TRANSITS, buildFlows, distanceToConnector } from './signals.js';
 import { mulberry32 } from './rng.js';
-import { createRenderer } from './render.js';
+import { createRenderer, readFrame } from './render.js';
 import {
   BONDED_MEAN_MIN, DEFAULT_FPS, DEFAULT_OUT, DEFAULT_SECONDS, DEFAULT_T, MIN_FLOWS_IN_FLIGHT,
   MIN_LIT_COMPONENTS, MOVING_BOARD_PEAK_MAX, MOVING_CANVAS_PEAK_MAX, VOID_FILL_MEAN_RANGE,
@@ -152,7 +152,7 @@ describe('§9.1 determinism', () => {
     const c = createRenderer(build(20260101).world);
     const px = (r: (t: number) => ReturnType<typeof a>, t: number): string =>
       createHash('sha256')
-        .update(Buffer.from(r(t).getContext('2d').getImageData(0, 0, WIDTH, HEIGHT).data))
+        .update(Buffer.from(readFrame(r(t))))
         .digest('hex');
     for (const t of [0, 111]) expect(px(a, t)).toBe(px(b, t));
     expect(px(a, 111)).not.toBe(px(c, 111));
@@ -520,7 +520,7 @@ describe('§13.6 the sweep is wired into the PRODUCTION render path', () => {
     const render = createRenderer(w);
     const frames: Uint8ClampedArray[] = [];
     for (let t = 0; t < w.T; t++)
-      frames.push(render(t).getContext('2d').getImageData(0, 0, WIDTH, HEIGHT).data);
+      frames.push(readFrame(render(t)));
     // a spread copy is a fresh identity, so this is measured afresh rather than
     // served from the memo
     expect(measureMovingCells({ ...w }, frames)).toEqual(measureMovingCells(w));

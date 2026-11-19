@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeGif } from './gif-decode.js';
 import { diffFrame, encodeGif, quantizeFrames } from './gif.js';
 import { HEIGHT, WIDTH } from './layout.js';
-import { createRenderer } from './render.js';
+import { createRenderer, readFrame } from './render.js';
 import { DEFAULT_T, buildWorld } from './timeline.js';
 
 /** The pinned production configuration (§13.4 / §13.6's reference command). */
@@ -17,7 +17,7 @@ function pinnedFrames(): Uint8ClampedArray[] {
   const render = createRenderer(world);
   const frames: Uint8ClampedArray[] = [];
   for (let t = 0; t < PINNED.T; t++)
-    frames.push(render(t).getContext('2d').getImageData(0, 0, WIDTH, HEIGHT).data);
+    frames.push(readFrame(render(t)));
   cachedFrames = frames;
   return frames;
 }

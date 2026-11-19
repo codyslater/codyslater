@@ -12,7 +12,7 @@ import {
   bondedFraction, buildReleaseSchedule, findSoup, genLength, meetsShippedForm, rungBand, visibleAges,
   voidPopulation,
 } from './creatures.js';
-import { createRenderer, drawStatic } from './render.js';
+import { createRenderer, drawStatic, readFrame } from './render.js';
 import { mulberry32 } from './rng.js';
 
 export const mod = (n: number, m: number): number => ((n % m) + m) % m;
@@ -174,12 +174,12 @@ export function measureMovingCells(world: World, frames?: readonly Uint8ClampedA
   if (cached) return cached;
   if (frames && frames.length !== world.T)
     throw new Error(`measureMovingCells: ${frames.length} frames supplied for a ${world.T}-frame world`);
-  const base = drawStatic(world).getContext('2d').getImageData(0, 0, WIDTH, HEIGHT).data;
+  const base = readFrame(drawStatic(world));
   let frameAt: (t: number) => Uint8ClampedArray;
   if (frames) frameAt = t => frames[t];
   else {
     const render = createRenderer(world);
-    frameAt = t => render(t).getContext('2d').getImageData(0, 0, WIDTH, HEIGHT).data;
+    frameAt = t => readFrame(render(t));
   }
   let boardPeak = 0, voidPeak = 0, canvasPeak = 0, boardSum = 0, canvasSum = 0;
   for (let t = 0; t < world.T; t++) {

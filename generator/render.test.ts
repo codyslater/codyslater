@@ -3,7 +3,7 @@ import {
   BOARD_RIGHT, CELL, COLORS, FABRIC_COLOR, FINGERS, GOLD, GRID_H, GRID_W, HEIGHT, NAME, NAME_ZONE,
   REV_RIGHT_PX, REV_ZONE, THESIS_ZONE, WIDTH,
 } from './layout.js';
-import { PALETTE, createRenderer, drawStatic, hot, mixOnBg, trailColorAt } from './render.js';
+import { PALETTE, createRenderer, drawStatic, hot, mixOnBg, readFrame, trailColorAt } from './render.js';
 import { FINGER_FLASH, TRAIL, flowDrawn } from './signals.js';
 import { visibleAges } from './creatures.js';
 import { buildWorld } from './timeline.js';
@@ -51,8 +51,7 @@ const countInk = (data: Uint8ClampedArray, z: { x: number; y: number; w: number;
     }
   return n;
 };
-const dataOf = (c: { getContext: (k: '2d') => { getImageData: (a: number, b: number, w: number, h: number) => { data: Uint8ClampedArray } } }): Uint8ClampedArray =>
-  c.getContext('2d').getImageData(0, 0, WIDTH, HEIGHT).data;
+const dataOf = readFrame;
 
 describe('colour helpers', () => {
   it('mixOnBg blends toward the substrate; hot blends toward white', () => {
@@ -345,5 +344,41 @@ describe('the frame', () => {
       for (let x = comp.rect.x; x < comp.rect.x + comp.rect.w; x++)
         if (hexAt(data, x, y) !== hexAt(base, x, y)) changed++;
     expect(changed).toBeGreaterThan(4);
+  });
+});
+
+describe('reading frames without leaking native memory', () => {
+  // `ctx.getImageData` in @napi-rs/canvas 1.0.2 leaves about 1.5 MB of native
+  // memory behind per call that V8 never sees, and a fresh canvas per frame
+  // left more: measured 1.37 GB per 288-frame pass, 28 GB over the suite.
+  it('readFrame returns exactly the bytes getImageData does', () => {
+    const canvas = renderer()(97);
+    const viaContext = canvas.getContext('2d').getImageData(0, 0, WIDTH, HEIGHT).data;
+    const viaRead = readFrame(canvas);
+    expect(viaRead).toBeInstanceOf(Uint8ClampedArray);
+    expect(Buffer.compare(Buffer.from(viaRead), Buffer.from(viaContext))).toBe(0);
+  });
+
+  it('readFrame returns a copy, so a later render cannot change a frame already read', () => {
+    const render = renderer();
+    const first = readFrame(render(40));
+    const snapshot = Buffer.from(first);
+    render(41);
+    expect(Buffer.compare(Buffer.from(first), snapshot)).toBe(0);
+  });
+
+  it('one canvas serves every frame', () => {
+    const render = renderer();
+    expect(render(1)).toBe(render(2));
+  });
+
+  it('a full pass of rendered and read frames does not grow resident memory', () => {
+    const render = renderer();
+    for (let t = 0; t < 40; t++) readFrame(render(t));      // warm up allocators
+    const before = process.memoryUsage().rss;
+    for (let t = 0; t < T; t++) readFrame(render(t));
+    const grownMb = (process.memoryUsage().rss - before) / 1048576;
+    console.log(`resident growth over one ${T}-frame pass: ${grownMb.toFixed(0)} MB`);
+    expect(grownMb).toBeLessThan(300);                      // the leak measured ~1370 MB
   });
 });

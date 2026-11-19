@@ -2,7 +2,7 @@ import { createCanvas } from '@napi-rs/canvas';
 import fs from 'node:fs';
 import { encodeGif } from './gif.js';
 import { HEIGHT, WIDTH } from './layout.js';
-import { createRenderer } from './render.js';
+import { createRenderer, readFrame } from './render.js';
 import {
   DEFAULT_FPS, DEFAULT_OUT, DEFAULT_SECONDS, buildWorld, gateWorld, measureMovingCells,
 } from './timeline.js';
@@ -56,7 +56,7 @@ const render = createRenderer(world);
 
 const frames: Uint8ClampedArray[] = [];
 for (let t = 0; t < T; t++) {
-  frames.push(render(t).getContext('2d').getImageData(0, 0, WIDTH, HEIGHT).data);
+  frames.push(readFrame(render(t)));
   if (t % 50 === 0) console.log(`rendered ${t}/${T}`);
 }
 // §13.5/§13.6's full-loop sweep, run in PRODUCTION and not only in the suite:

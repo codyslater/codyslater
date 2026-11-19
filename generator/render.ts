@@ -375,19 +375,26 @@ export function drawSoup(ctx: SKRSContext2D, st: SoupState, colors: readonly str
 
 /**
  * `createRenderer(world)(t)` evaluates any frame as a pure function of
- * `t mod T`: nothing is stored between frames, so `render(T)` is bit-identical
+ * `t mod T`: no STATE is carried between frames, so `render(T)` is bit-identical
  * to `render(0)` by construction.
+ *
+ * One canvas is reused for every frame, and each call repaints all of it from
+ * the opaque static layer. The returned canvas is therefore valid only until
+ * the next call: read it (`readFrame` / drawImage) before rendering again.
+ * A fresh canvas per frame costs about 4.7 MB of native memory that V8 cannot
+ * see and so never collects in time — measured 1.37 GB per 288-frame pass,
+ * which is what took the full suite past 28 GB.
  */
 export function createRenderer(world: World): (t: number) => Canvas {
   registerFonts();
   const staticLayer = drawStatic(world);
-  const baseData = staticLayer.getContext('2d').getImageData(0, 0, WIDTH, HEIGHT).data;
+  const baseData = readFrame(staticLayer);
   const nodes = [...world.takeovers.keys()];
+  const canvas = createCanvas(WIDTH, HEIGHT);
+  const ctx = canvas.getContext('2d');
 
   return (tRaw: number): Canvas => {
     const t = mod(tRaw, world.T);
-    const canvas = createCanvas(WIDTH, HEIGHT);
-    const ctx = canvas.getContext('2d');
     ctx.drawImage(staticLayer, 0, 0);
 
     // component conversions — "the whole component becomes a coloured view of itself"
@@ -423,4 +430,19 @@ export function createRenderer(world: World): (t: number) => Canvas {
     for (const age of visibleAges(t, world.T)) drawSoup(ctx, world.soup.frames[age], ACCENT_LIST);
     return canvas;
   };
+}
+
+/**
+ * A frame's pixels as RGBA bytes, copied out of the canvas.
+ *
+ * This is the ONE way the generator reads a rendered frame. `ctx.getImageData`
+ * in @napi-rs/canvas 1.0.2 leaves about 1.5 MB of native memory behind on every
+ * call, which V8 cannot see and so does not collect: 288 frames per pass, about
+ * thirty passes in the suite, 28 GB. `canvas.data()` returns the same bytes for
+ * an opaque canvas (asserted in render.test.ts) and leaves nothing behind. The
+ * copy matters: the renderer reuses its canvas, so a view into it would change
+ * under the caller on the next render.
+ */
+export function readFrame(canvas: Canvas): Uint8ClampedArray {
+  return new Uint8ClampedArray(canvas.data());
 }
